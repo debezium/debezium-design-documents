@@ -106,7 +106,7 @@ This way, each of the connectors could implement the relevant of the two APIs. I
 
 #### Affect on framework-level classes
 
-Some framework-level classes that are reused by multiple connectors and depend on the interfaces above will have to be reworked to satisfy both of the APIs. It could be either one class per interface or one class implementing both interfaces. The latter looks more reasonable since their implementatin will be the same for the most part.
+Some framework-level classes that are reused by multiple connectors and depend on the interfaces above will have to be reworked to satisfy both of the APIs. It could be either one class per interface or one class implementing both interfaces. The latter looks more reasonable since their implementation will be the same for the most part.
 
 So far, the following classes have been identified:
 
@@ -116,7 +116,7 @@ So far, the following classes have been identified:
 
 #### Example of a change in the `ChangeEventSourceCoordinator` logic
 
-In partitioned mode, the coordinator coordinator, instead of just switching from snapshot to the streaming sources, will iterate over a collection of partitions/offsets and reuse each source for each of them:
+In partitioned mode, the coordinator, instead of just switching from snapshot to the streaming sources, will iterate over a collection of partitions/offsets and reuse each source for each of them:
 
 **Nonpartitioned (current logic)**:
 
