@@ -167,6 +167,12 @@ while (context.isRunning()) {
 }
 ```
 
+### Changes in mapping table identifiers to topic names and internal schema representation
+
+In order to accomodate changes from multiple databases, instead of naming topics as `<server>.<schema>.<table>`, the connector will name them as `<server>.<database>.<schema>.<table>`.
+
+The changes implemented in [DBZ-1089](https://issues.redhat.com/browse/DBZ-1089) should be partially reverted since for SQL Server both the database name and schema name should be taken into account when building schema.
+
 ## TODO:
 
 1. Define configuration for multiple databases to be processed by a connector. Only one of `database.dbname` and this one must be configured on a given connector.
