@@ -101,3 +101,5 @@ tbd.
 ### Open questions
 
 * How to avoid a never-ending incremental snapshot if there are inserts happening continously?
+* How to deal with different PK types? And composite PKs?
+
