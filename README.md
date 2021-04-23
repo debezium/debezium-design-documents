@@ -6,4 +6,4 @@ When creating a new document, please add it to the list below.
 
 ## Contents
 
-* DDD-1: Support for multiple connector tasks for relational Debezium connectors (link)
+* [DDD-1](DDD-1.md): Support for multiple connector tasks for relational Debezium connectors
