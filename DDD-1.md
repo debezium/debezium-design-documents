@@ -173,6 +173,69 @@ In order to accomodate changes from multiple databases, instead of naming topics
 
 The changes implemented in [DBZ-1089](https://issues.redhat.com/browse/DBZ-1089) should be partially reverted since for SQL Server both the database name and schema name should be taken into account when building schema.
 
+### Changes in metrics
+
+Currently, each connector has one task which processes one source partition. At any moment in time, the connector metrics are represented by a single MBean with the following name:
+
+```
+debezium.sql_server:type=connector-metrics,context=<context>,server=<server>
+```
+
+The one-to-many deployment topology requires the addition of two more dimensions to the metrics exposed by the connector:
+
+1. Task-level metrics. E.g. “is connected“. Each task run by the connector may be connected to or disconnected from the server independently on others. Task-level metrics will be reported by the following beans:
+
+   ```
+   debezium.sql_server:type=connector-metrics,context=<context>,server=<server>,task=<id>
+   ```
+
+2. Partition-level metrics. E.g. “snapshot completed“. The snapshot of each individual database may or may be not completed independently on others. Partition-level metrics will be reported by the following beans:
+
+   ```
+   debezium.sql_server:type=connector-metrics,context=<context>,server=<server>,database=<database>
+   ```
+
+   Note, in order to be able to display task-scoped metrics for a given partition, we may need to add `task=<id>` to the partition-scoped metrics as well. See the "Grafana dashboards" section.
+
+#### Implementation details:
+
+Internally, metrics for each of the three [contexts](https://debezium.io/documentation/reference/1.5/connectors/sqlserver.html#sqlserver-monitoring) are represented by a `Metrics` class which fulfills two responsibilities (each is declared by an interface):
+
+1. `Listener`: receives status updates updates from the task (e.g. “connected to the database“).
+2. `MXBean`: exposes the current status to the JMX server (e.g. “is connected to the database“).
+
+In order to accommodate the new dimensions, the context metrics classes and interfaces above need to be split in smaller pieces with the following behavior:
+
+1. In each context, the declaration of all partition-scoped and task-scoped metrics are extracted into the corresponding separate `MXBean` interfaces and classes. For instance: `ChangeEventSourceMetricsMXBean` → `ChangeEventSourceMetricsMXBean` (common metrics) + `ChangeEventSourcePartitionMetricsMXBean` (partition metrics) + `ChangeEventSourceTaskMetricsMXBean`.
+
+2. Each metrics class still acts as a listener for all status changes regardless of the scope, but for partition-scoped parameters, it accepts an additional argument to identify the partition from which an update is coming. For instance:
+
+   `void snapshotCompleted()` → `void snapshotCompleted(Partition partition)`
+
+3. Each metrics object internally maintains a collection of `MXBean` objects representing one partition each and delegates partition-scoped updates to the corresponding bean.
+
+4. Each metrics object accepts the task identifier in its constructor and uses it for task-scoped metrics and acts as a task-scoped `MXBean`.
+
+5. When registering or unregistering with a JMX server, the metrics class also registers or unregisters its underlying beans.
+
+6. The names of partition-scoped beans must contain the labels that describe the partition. They could be directly derived from `Partition#getSourcePartition()` since it’s also of type `Map<String, String>`. In order to make bean names consistent, the source partition of each connector-level partition must be represented by a `LinkedHashMap`.
+
+#### Additional code changes
+
+Some test helper methods like `TestHelper#waitForSnapshot` use metrics internally as the source of task status. They need to be reworked to expect the snapshot to be done on a specific partition (e.g. `TestHelper#waitForSnapshot(Partition partition)`).
+
+#### Backward compatibility considerations
+
+The current set of MBeans and their names are part of the connectors' public API. Backward compatibility with the current implementation can be provided in the following way:
+
+1. Introduce a configuration parameter to enable the new metrics format. The default value is "disabled".
+2. Pass the value of this parameter to all MBeans via a constructor. Depending on the value, the beans will register with the new or with the old names.
+3. Automatically enable the new format if the connector is configured to capture changes from more than one database. This is necessary, because otherwise the connector won't be able to register multiple MBeans with the same name.
+
+#### Grafana dashboards
+
+The [example Grafana dashboard](https://github.com/debezium/debezium-examples/tree/master/monitoring) needs to be updated to support the new metrics. Since dashboard contains not only graphs but also gauges, it seems challenging to display the metrics from all tasks and partitions at once. The easiest and least breaking solution should be to add two more new dropdowns: Task and Partition. The dashboard will display the metrics of the selected partition and its task.
+
 ## TODO:
 
 1. Define configuration for multiple databases to be processed by a connector. Only one of `database.dbname` and this one must be configured on a given connector.
