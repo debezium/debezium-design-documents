@@ -93,3 +93,11 @@ It is also necessary to test the behaviour of the connector creash and restart w
 * window is closed but buffer is not empty
 * window is opened
 * window buffer streaming is in progress
+
+### Rejected alternatives
+
+tbd.
+
+### Open questions
+
+* How to avoid a never-ending incremental snapshot if there are inserts happening continously?
