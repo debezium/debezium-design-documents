@@ -45,25 +45,29 @@ In the new approach, the `read` event is just a point in time materialization of
 For more details please read the referred paper.
 
 The Debezium implementation will be based on signalling table.
-To start an incremental snapshot, a signal `snapshot` will be written to the table with parameters
+To start an incremental snapshot, an ad-hoc snapshot signal `execute-snapshot` will be written to the table with parameters
 
-* `tables` - list of tables to be captured
+* `data-collections` - list of tables to be captured
 * `type` - set to `incremental`
 
 New signals `snapshot-window-open` and `snapshot-window-close` will be implemented to handle the watermark signal with no parameters.
 
+Debezium will execute query like `SELECT key, key2 FROM table ORDER BY key1 DESC, key2 DESC LIMIT 1`.
+The result of this query is the upper limit at which the incremental snapshotting will stop.
+
 When a chunk should be snapshotted
 
 * streaming is paused (this is implicit when the signal is handled)
-* a `snapshot-window-open` watermark signal is emitted
+* a `snapshot-window-open` watermark signal is emitted with a unique id
 * a new data chunk is read from database by generating the `SELECT` statement and placed into a window buffer keyed by primary keys
-* a `snapshot-window-close` watermark signal is emitted
+* a `snapshot-window-close` watermark signal is emitted with id coresponding to the window open signal
 * streaming is resumed
 
 During the subsequent streaming
 
-* if `snapshot-window-open` is received then window processing mode is enabled
-* if `snapshot-window-close` is received then window processing mode is disabled and the rest of the windows buffer is streamed
+* if `snapshot-window-open` is received and its id is the same as expected then window processing mode is enabled
+* if `snapshot-window-close` is received  and its id is the same as expected then window processing mode is disabled and the rest of the windows buffer is streamed
+  * every streamed event contains serialized PK related to it to enable resume of the windowing upn connector restart
 * if window processing mode is enabled then
   * if the event key is contained in the window buffer then it is removed form the window buffer
 * event is streamed
@@ -79,6 +83,7 @@ The `SELECT` will need to be generated and fulfill these conditions:
 * it will be ordered by primary keys, like `ORDER BY key1, key2`
 * it must return only a limited number of records based on the chunk size, e.g. using `TOP n` or `LIMIT n`
 * it will contain records starting from but not including the last one seen like `WHERE key1 >= xx AND key2 >= yy AND NOT (key1 = xx AND key2 = yy)`
+* it must not contain records with primary key larger then maximum value recorded at the start of the table snapshot like `key1 <= maxkey1 AND key2 <= maxkey2`
 
 The snapshotting is terminated when the chunk query will not return any results and there are no more tables to be snapshotted.
 
@@ -100,6 +105,5 @@ tbd.
 
 ### Open questions
 
-* How to avoid a never-ending incremental snapshot if there are inserts happening continously?
 * How to deal with different PK types? And composite PKs?
 
