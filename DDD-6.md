@@ -36,65 +36,139 @@ Initially will start with support for Debezium Server. However the resources sho
 The two primary options to consider her are Golang's Operator SDK (Golang) or Java Operator Framework (as Quarkus extension) . In case of a java-centered team such as our it makes sense to go with JODSK --  especially since JOSDK has quite active development. 
 
 
-### Custom Resource Proposal
-The following is a proposed example of `DebeziumServer` custom resource instance (in this). 
+## Custom Resource Proposal
+
+### DebeziumServerSpec Reference
+```yaml
+spec:
+  version: String
+  image: String # exclusive with version
+  storage:
+    type: persistent | ephemeral  # enum
+    claimName: String # only valid and required for persistent
+  runtime:
+    env: EnvFromSource array # https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.23/#envfromsource-v1-core
+    volumes: Volume array # https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.23/#volume-v1-core
+  quarkus:
+  # quarkus properties 
+  format:
+    value:
+      type: String
+      # other format properties
+    key:
+      type: String
+    header:
+      type: String
+  transforms:
+    - type: String
+      predicate: String
+      negate: Boolean
+      config:
+        # other transformation properties
+  predicates:
+    name:
+      type: String
+      config:
+        # other preticate properties
+  sink:
+    type: String
+    config:
+      # other sink properties
+  source:
+    class: String
+    config:
+      # other source connector properties
+```
+
+Resource status will be an array of `Condition`. 
+### DebeziumServerStatus Reference
+```yaml
+status:
+    conditions: # Condition array
+        - status: String
+          type: String
+          message: String
+
+```
+For start only the `Ready` condition is defined
+```
+status: True | False
+type: Ready
+```
+
+### Example Custom Resource Instance
+The following is an of the proprosed `DebeziumServer` custom resource. 
 
 ```yaml
 apiVersion: debezium.io/v1alpha1
 kind: DebeziumServer
-metadata: 
-    name: my-debezium
+metadata:
+  name: my-debezium
 spec:
-    version: "2.2"
-    storage:
-      type: persistent 
-      claimName: ds-data-pvc
-    quarkus:
-      log.console.json: false
-    format:
-      value:
-        type: json
+  image: quay.io/jcechace/debezium-server:latest
+  storage:
+    type: persistent
+    claimName: ds-data-pvc
+  runtime:
+    env:
+      - configMapRef:
+          name: ds-env
+      - secretRef:
+          name: ds-secret-env
+    volumes:
+      - name: extra
+        configMap:
+          name: ds-mounts
+      - name: extra-secret
+        secret:
+          secretName: ds-secret-mounts
+  quarkus:
+    log.console.json: false
+    kubernetes-config.enabled: true # enable access to config maps and secrets
+    kubernetes-config.secrets: ds-creds # use ds-creds secret in the same namespace
+  format:
+    value:
+      type: json
+      config:
         schemas.enable: false
-    transforms:
-      - name: test
-        type: com.example.TestTransform
-        predicate: test
-        negate: false
+    key:
+      type: json
+  transforms:
+    - name: test
+      type: com.example.TestTransform
+      predicate: test
+      negate: false
+      config:
         prop: 42
-    sink:
-      type: kafka
+  predicates:
+    - type: com.example.TestPredicate
+      config:
+        prop: 42
+  sink:
+    type: kafka
+    config:
       producer.bootstrap.servers: dbz-kafka-kafka-bootstrap:9092
       producer.key.serializer: org.apache.kafka.common.serialization.StringSerializer
       producer.value.serializer: org.apache.kafka.common.serialization.StringSerializer
-    source:
-      class: io.debezium.connector.mongodb.MongoDbConnector
-      mongodb.connection.string: mongodb://debezium:dbz@mongo.debezium.svc.cluster.local:27017/?replicaSet=rs0
-      database.history: io.debezium.relational.history.FileDatabaseHistory
-      tasks.max: 1
-      topic.prefix: demo
-      database.include.list: inventory
-      collection.include.list: inventory.customers
-      offset.storage.file.filename: /debezium/data/offsets.dat
-      offset.flush.interval.ms: 0 
-Status:
-    conditions:
-        Status: True
-        Type: Ready
-        Message: Server my-debezium is operational 
+  source:
+    class: io.debezium.connector.mongodb.MongoDbConnector
+    mongodb.connection.string: mongodb://mongo.debezium.svc.cluster.local:27017/?replicaSet=rs0
+    mongodb.username: ${username} # references key from secret
+    mognodb.password: ${password}
+    database.history: io.debezium.relational.history.FileDatabaseHistory
+    tasks.max: 1
+    topic.prefix: demo
+    database.include.list: inventory
+    collection.include.list: inventory.customers
+    offset.storage.file.filename: /debezium/data/offsets.dat
+    offset.flush.interval.ms: 0
+status:
+  conditions:
+    - status: True
+      type: Ready
+      message: Server my-debezium is ready 
 ```
 
 
-## Open Questions
-
-1) Do we need a service? What for?
-2) How to handle "Templating" to allow customization of deplyments outside of the scope allowed by the operator 
-    - This is needed due to reconciliation (JOSDK doesn't allow merge reconciliations)
-    -  It also solves a problem of different requirements between sinks (e.g. only some require environment variables)
-3) Dynamic vs Static cnfiguration typing
-    - Per sink type configuration with specific properties
-    - Single sink configurationion with arbitrary properties in form of `Map<String, Object>`
-4) Per namespace / all namespaces / both?
-
-
-
-
+### Handling sensitive configuration
+The operator needs to handle senstivie data such as connection credentials securely. 
