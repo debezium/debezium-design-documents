@@ -200,21 +200,21 @@ On the other hand, this can increase the number of duplicated records after engi
 The state of the engine will be described by the `AtomicReference<State> state` variable.
 `State` enumeration will contain following elements:
 
-* `STARTING` - the engine is being started, which mostly means engine object is being created or was already created, but `run()` method wasn't called yet,
+* `CREATING` - the engine is being started, which mostly means engine object is being created or was already created, but `run()` method wasn't called yet,
 * `INITIALIZING` - switch to this state at the very beginning of the `run()` method, engine is in this state during initializing of the connector, starting the connector itself and calling `DebeziumEngine.ConnectorCallback.connectorStarted()` callback,
 * `CREATING_TASKS` - switch to this state after successful start of the connector, configurations of the tasks are being created and initialized,
-* `STARING_TASKS` - tasks are being started, each in separate thread; stays in this stage until tasks are started, start of the tasks have failed or time specified by `TASK_MANAGEMENT_TIMEOUT_MS` option elapsed,
+* `STARTING_TASKS` - tasks are being started, each in separate thread; stays in this stage until tasks are started, start of the tasks have failed or time specified by `TASK_MANAGEMENT_TIMEOUT_MS` option elapsed,
 * `POLLING_TASKS` - tasks polling has started; this is the main phase when the data are produced and engine stays in this stage until it starts to shut down or exception was thrown,
 * `STOPPING` - the engine is being stopped, either because engine's `close()` method was called or an exception was thrown; offsets are stored, `ExecutorService` for processing records shut down,  tasks and connector are stopped in this stage,
 * `STOPPED` - engine has been stopped; final state, cannot move any further from this state and any call on engine object in this state should fail
 
 Possible state transitions:
 
-* `STARTING` -> `INITIALIZING`
+* `CREATING` -> `INITIALIZING`
 * `INITIALIZING` -> `CREATING_TASKS`
-* `CREATING_TASKS` -> `STARING_TASKS`
-* `STARING_TASKS` -> `POLLING_TASKS`
-* (`STARTING` | `INITIALIZING` | `CREATING_TASKS` | `STARING_TASKS` | `POLLING_TASKS`) -> `STOPPING` 
+* `CREATING_TASKS` -> `STARTING_TASKS`
+* `STARTING_TASKS` -> `POLLING_TASKS`
+* (`CREATING` | `INITIALIZING` | `CREATING_TASKS` | `STARTING_TASKS` | `POLLING_TASKS`) -> `STOPPING` 
 * `STOPPING`  -> `STOPPED` 
 
 #### Preventing resource leakage
@@ -222,10 +222,10 @@ Possible state transitions:
 An engine stage that requires special attention is the one during which tasks are started.
 At this stage connections the databases are being created and if something bad happens or the  engine is shut down while tasks are being started, it may result in various leaked resources, e.g. unclosed replication slots.
 For more detail about possible issues, please see [DBZ-2534](https://issues.redhat.com/browse/DBZ-2534).
-To prevent this situation, transition from `STARING_TASKS` into  `STOPPING`  won't be possible by calling engine's `close()` method.
-Also, `STARING_TASKS` must finish completely.
+To prevent this situation, transition from `STARTING_TASKS` into  `STOPPING`  won't be possible by calling engine's `close()` method.
+Also, `STARTING_TASKS` must finish completely.
 Even if one of the threads fails to start the task it was running, the main (engine) thread has to wait for all other tasks until they finish (no matter if successfully or not) before moving into the `STOPPING` state.
-In general, transition `STARING_TASKS` ->  `STOPPING` is possible, but it should happen only in the case when an exception was thrown from method starting tasks and only until all threads starting tasks have finished.
+In general, transition `STARTING_TASKS` ->  `STOPPING` is possible, but it should happen only in the case when an exception was thrown from method starting tasks and only until all threads starting tasks have finished.
 
 #### Exception handling
 
@@ -254,7 +254,7 @@ It can be added in the future if there is user demand for it.
 
 #### Engine shut down
 
-During the engine shut down all tasks should be stopped if the engine reached at least `STARING_TASKS` state.
+During the engine shut down all tasks should be stopped if the engine reached at least `STARTING_TASKS` state.
 Before calling task shut down, shutdown of `ExecutorService` used for processing CDC records is called and awaited.
 Each task should also commit an offset before its shutdown is called and the engine waits for tasks to stop.
 Users can set the `TASK_MANAGEMENT_TIMEOUT_MS` option (which is used also for start of the tasks) to adjust waiting time for the shutdown of the tasks.
