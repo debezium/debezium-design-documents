@@ -8,4 +8,4 @@ When creating a new document, please add it to the list below.
 
 * [DDD-1](DDD-1.md): Support for multiple source partitions for relational Debezium connectors
 * [DDD-3](DDD-3.md): Incremental snapshotting
-* [DDD-7](DDD-7.md): Offset storage contract
+* [DDD-7](DDD-7.md): Asynchronous Debezium embedded engine
