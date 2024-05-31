@@ -1,4 +1,4 @@
-# DDD-7: Read-only incremental snapshots for other relational connectors
+# DDD-8: Read-only incremental snapshots for other relational connectors
 
 ## Motivation
 [Incremental snapshot](https://debezium.io/blog/2021/10/07/incremental-snapshots/) was a major improvement introduced in Debezium 1.6 to solve three key issues with Debezium's handling of captured tables.
@@ -30,8 +30,8 @@ The goal is to investigate the possibility to have read-only incremental snapsho
 
 There are two possible way to avoid writing the low/high watermark on the table identified by the `signal.data.collection` property:
 
-* Use `pg_logical_emit_message` that permits to write directly into the WAL. It is available from PostgreSQL 9.6.
-* Use `pg_current_snapshot` that permits to get a current snapshot - a data structure showing which transaction IDs are now in-progress. It is available from PostgreSQL 13.
+* Use [pg_logical_emit_message](https://pgpedia.info/p/pg_logical_emit_message.html****) that permits to write directly into the WAL. It is available from PostgreSQL 9.6.
+* Use [pg_current_snapshot](https://pgpedia.info/p/pg_current_snapshot.html) that permits to get a current snapshot - a data structure showing which transaction IDs are now in-progress. It is available from PostgreSQL 13.
 
 The use of `pg_logical_emit_message` is restricted to superusers and users having `REPLICATION` privilege, 
 so it is fine to be used with major Debezium configurations except when logical decoder plugin is `pgoutput` and `publication.autocreate.mode` is `disabled`. 
@@ -48,6 +48,8 @@ The `pg_current_snapshot` returns a [pg_snapshot](https://github.com/postgres/po
 * xmax: contains the most recent transaction ID known by the snapshot. All tuples with a txid > xmax are invisible by the current snapshot.
 * xip: the set of in-progress transaction IDs contained in a snapshot.
 
+> **_NOTE:_** the id returned is `xid8` which never wraps around, so we don't need to take care about it either.
+
 ```shell
 SELECT pg_current_snapshot();
  pg_current_snapshot 
@@ -55,16 +57,19 @@ SELECT pg_current_snapshot();
  795:799:795,797
 (1 row)
 ```
-The idea is to use the `pg_current_snapshot` to get the current in-progress transaction IDs just before and after reading the data chunk. 
-After that we can identify the list of transaction IDs that has been commited during the reading of the chunk, and then use this information to deduplicate events from the stream.
+The idea is to use the `pg_current_snapshot` to get the `xmin` before starting reading the chunk and the `xmax` after finishing the read of the chunk. 
+In this way we can clearly identify the de-duplication window. When an event with `txId` that falls inside the window arrives, it needs to be de-duplicated. 
 
-In pseudo-code, the algorithm for deduplicating events read from log and events retrieved via snapshot chunks looks like this: 
+It is also worth to note that the connection used during incremental snapshot queries doesn't explicitly set the transaction isolation level, 
+by default the [READ COMMITTED](https://www.postgresql.org/docs/current/transaction-iso.html) is used.
+This will avoid a possible *dirty read* - a transaction reads data written by a concurrent uncommitted transaction.
+
+In pseudocode, the algorithm for deduplicating events read from log and events retrieved via snapshot chunks looks like this: 
 
 ```text
 (1) Set lwInProgressTx := xip from pg_current_snapshot()
 (2) chunk := select next chunk from table
 (3) Set hwInProgressTx := xip from pg_current_snapshot()
-(4) Set completedTxs := hwInProgressTxSet subtracted by lwInProgressTx
   inwindow := false
   // other steps of event processing loop
   while true do
@@ -74,7 +79,7 @@ In pseudo-code, the algorithm for deduplicating events read from log and events 
            if lwInProgressTxSet.contains(e.txId) //reached the low watermark
                inwindow := true
        
-       if completedTxs.contains(e.txId) //haven't reached the high watermark yet
+       if not hwInProgressTx.contains(e.txId) //haven't reached the high watermark yet
            if chunk contains e.key then
                remove e.key from chunk
        else //reached the high watermark
@@ -89,7 +94,7 @@ The figure below shows the process of deduplication. We have:
 * Back-fill chunks: record read from the database during chunk snapshot. Striped one means that the record has been removed by the deduplication.
 * Output stream: the final emitted events. 
 
-The think to note here is what happens to the record with key `k2`. 
+The thing to note here is what happens to the record with key `k2`. 
 This record is read by the snapshot and, since it associated to a transaction that completed during the snapshot - the high watermark reveal only the `Tx13` is still in progress, 
 we are sure that this event must be deduplicated. This will effectively remove from the windows the event that was read.
 
@@ -111,6 +116,8 @@ void emitWindowClose(P partition, OffsetContext offsetContext); // (3)
 Extend the `AbstractIncrementalSnapshotContext` with `PostgresReadOnlyIncrementalSnapshotContext` to add information about the low/high watermark sets.
 
 Note that before calling the `pg_current_snapshot()` a call to `pg_current_xact_id ()` must be done to force the database to assign a new transaction ID because we will not any database updates. This enables the `pg_current_snapshot()` to see the others transactions. 
+
+Support for `read.only` property will be added to enable the read only incremental snapshot. 
 
 #### Limitations
 The `pg_current_snapshot()` will show only top-level transaction IDs; sub-transaction IDs are not shown;
