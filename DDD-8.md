@@ -67,19 +67,19 @@ This will avoid a possible *dirty read* - a transaction reads data written by a 
 In pseudocode, the algorithm for deduplicating events read from log and events retrieved via snapshot chunks looks like this: 
 
 ```text
-(1) Set lwInProgressTx := xip from pg_current_snapshot()
+(1) pg_snapshot lwSnapshot := pg_current_snapshot()
 (2) chunk := select next chunk from table
-(3) Set hwInProgressTx := xip from pg_current_snapshot()
+(3) pg_snapshot hwSnapshot := pg_current_snapshot()
   inwindow := false
   // other steps of event processing loop
   while true do
        e := next event from changelog
        append e to outputbuffer
        if not inwindow then
-           if lwInProgressTxSet.contains(e.txId) //reached the low watermark
+           if e.txId >= pg_snaphot_min(lwSnapshot)  //reached the low watermark
                inwindow := true
        
-       if not hwInProgressTx.contains(e.txId) //haven't reached the high watermark yet
+       if e.txId < max(pg_snaphot_max(lwSnapshot), pg_snaphot_max(hwSnapshot)) //haven't reached the high watermark yet
            if chunk contains e.key then
                remove e.key from chunk
        else //reached the high watermark
@@ -123,3 +123,5 @@ Support for `read.only` property will be added to enable the read only increment
 The `pg_current_snapshot()` will show only top-level transaction IDs; sub-transaction IDs are not shown;
 
 So if the snapshot is reading a chunk from a table that is modified through a sub-transaction a duplicate may not be recognized. 
+
+Furthermore, the de-duplication algorithm is based on the assumption that the transaction isolation level is set to [READ COMMITTED](https://www.postgresql.org/docs/current/transaction-iso.html).
