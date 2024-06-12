@@ -121,7 +121,8 @@ Support for `read.only` property will be added to enable the read only increment
 
 #### Limitations
 The `pg_current_snapshot()` will show only top-level transaction IDs; sub-transaction IDs are not shown;
-
 So if the snapshot is reading a chunk from a table that is modified through a sub-transaction a duplicate may not be recognized. 
 
 Furthermore, the de-duplication algorithm is based on the assumption that the transaction isolation level is set to [READ COMMITTED](https://www.postgresql.org/docs/current/transaction-iso.html).
+
+Since the support for `pg_current_snapshot()` was added on PostgreSQL 13, the read-only incremental snapshot will be available only for PostgreSQl versions greater than or equal to 13. 
