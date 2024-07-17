@@ -150,6 +150,9 @@ A [replica set (RS)](https://www.mongodb.com/docs/manual/core/replica-set-member
 * Secondaries:
   replicate operations from the primary to maintain an identical data set. To replicate data, a secondary applies operations from the primary's oplog to its own data set in an asynchronous process. A replica set can have one or more secondaries.
 
+> Note: Technically there are also hidden members (secondaries which are purposefully hidden from client advertising) and arbiter nodes (nodes which don't hold data but vote in primary election). 
+> Neither of these are likely relevant for our case (although technically a hidden node could be used for CDC with direct connection)
+
 Every node in a RS has its own [_oplog_ collection](https://www.mongodb.com/docs/manual/core/replica-set-oplog/) located into `local.oplog.rs`.
 
 The standard way to connect to RS is using the following connection string
@@ -167,9 +170,13 @@ This type of configuration is common for CDC scenario where users wants to reduc
 
 So you can directly connect to a secondary specifying its address and setting the read preference mode accordingly. 
 
-This configuration can lead to a possible weird issues in particular type of deployments. For example, if you have that nodes of the RS has two network address, internal and external, and you configure 
-the connection string to point to a secondary using its external address, when the client connects to the RS and retrieve its information, even the intern addresses of the nodes, it then can use the internal address causing connection failures. 
-To overcome to this, you can set the [directConnection](https://www.mongodb.com/docs/manual/reference/connection-string/#mongodb-urioption-urioption.directConnection) property.
+This configuration can lead to a possible weird issues in particular type of deployments. 
+For example, if the nodes of the RS has two network address, internal and external, and you configure 
+the connection string to point to a secondary using its external address, when the client connects to the RS and retrieve the cluster description, even the intern addresses of the nodes, it will always use the internal address causing connection failures.
+For this reason with RS topology it is generally not a good idea to configure the RS with addresses which are not reachable form the outside. 
+The correct approach in this case is to use hostnames and make sure that the hostname is resolved to internal address for in-cluster communication and resolve to a public address for external access.
+
+Another approach, but it sacrifices high availability capabilities, is to use the [directConnection](https://www.mongodb.com/docs/manual/reference/connection-string/#mongodb-urioption-urioption.directConnection) property, in that case it will connect only to the specified host in the connection string.
 
 ##### Sharded cluster
 
@@ -209,9 +216,11 @@ the timestamp from the oplog entry associated with the event.
 So if we are able to get the max timestamp in the _oplog_ we can use this value as a log/high watermark, so that the resulting high level algorithm will be:
 
 ```text
-(1) Timestamp lw := getLastTimestamp()
-(2) chunk := select next chunk from table
-(3) Timestamp hw := getLastTimestamp()
+(1) Pause the streaming
+(2) Timestamp lw := getLastTimestamp()
+(3) chunk := select next chunk from table
+(4) Timestamp hw := getLastTimestamp()
+(5) Resume the streaming
   inwindow := false
   // other steps of event processing loop
   while true do
@@ -246,19 +255,15 @@ To solve this limitation we can think to directly use the change stream API inst
 So we will have a change stream for the normal event streaming and a temporary change stream opened specifically to get the low and high watermarks.
 
 ```java
-MongoCursor<ChangeStreamDocument<Document>> cursor = db.watch().iterator();
-ChangeStreamDocument<Document> lastDocument = cursor.next();
+MongoCursor<ChangeStreamDocument<Document>> cursor = db.watch().cursor(); 
+ChangeStreamDocument<Document> lastDocument = cursor.tryNext();
 
-BsonTimestamp tLast = lastDocument.getClusterTime();
+
+BsonDocument resumeToken = lastDocument != null? lastDocument.getResumeToken() : cursor.getResumeToken();
+
+BsonTimestamp lastTimestamp = ResumeTokens.getTimestamp(resumeToken);
 ```
-
-In case no document is present we can execute a fake operation to get the operation timestamp.
-
-```java
-var database = client.getDatabase(dbName);
-var result = database.runCommand(new Document("hello", 1), BsonDocument.class);
-BsonTimestamp tLast = result.getTimestamp("operationTime");
-```
+the last line will just reuse a Debezium utility class that extract the timestamp from the `_data` field of the resume token.
 
 So the _getLastTimestamp_ function can be implemented using the above code snippets.
 
