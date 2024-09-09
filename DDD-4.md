@@ -108,7 +108,7 @@ This field is a JSON array of entries that have the following format:
 ```json
 {
   "incremental_snapshot_collections_id": "<database>.<schema>.<table>", // string, the TableId
-  "incremental_snapshot_collections_additional_condication": "ID = 25", // string, the additional where condition, may be null
+  "incremental_snapshot_collections_additional_condition": "ID = 25", // string, the additional where condition, may be null
   "incremental_snapshot_collection_surrogate_key": "NAME" // string, may be null.
 }
 ```
@@ -124,33 +124,52 @@ Provide a signal action to read and write offsets for each connector. The signal
 The `Change Offset` signal action will be used to change the offset of a connector. The action will have the following attributes:
 
 * `name` - The name of the action. This will be `change-offset`.
-* `offset-position` - The new offset position to set (which corresponds to `lsn_commit` in the PostgreSQL connector).
-* `last-offset-position` - The last offset position to set (which corresponds to `lsn_proc` in the PostgreSQL connector).
+* `connector-offsets` - The new offset values to be set. This will be a map of key-value pairs containing the fields required to set the offset. The fields will be specific to the connector implementation.
 
-Furthermore, there will other attributes that will be specific to the connector depending on the connector implementation.
+The signal action will look like this:
 
+| KEY               | VALUE                                                                                      |
+|-------------------|--------------------------------------------------------------------------------------------|
+| change-offset     | {"data": {"connector-offsets": [{"lsn": 12345, "lsn_proc": 12345, "lsn_commit": 12345 }]}} |
 
-### Offset Fields Validation
+### Offset Fields
 
 There will be a validation mechanism to ensure that the offset fields provided in the signal action are valid for the connector. To achieve this there will be a new interface `io.debezium.pipeline.spi.OffsetValidator` 
 and a common class `io.debezium.pipeline.spi.CommonOffsetValidator` that will somewhat look like this:
 
+### Implementation
+
+There will be a new interface `io.debezium.pipeline.spi.ChangeOffsetHandler` that will be used to load and validate the offset fields. The interface will have the following methods:
+
 ```java
-public interface OffsetValidator {
-    List<String> validateOffsetFields(Map<String, String> offsetFields);
-}
+public interface ChangeOffsetHandler<O extends OffsetContext> {
 
-public class CommonOffsetValidator implements OffsetValidator {
+    O load(Map<String, ?> data);
+    
+    String validate(Map<String, ?> data);
+
+    List<String> getRequiredFields();
+}
+```
+
+There will be a new class `io.debezium.pipeline.spi.CommonChangeOffsetHandler` that will be used to load the `ChangeOffsetHandler` for a specific connector. For example, the `PostgresChangeOffsetHandler` will look like this:
+
+```java
+public class PostgresChangeOffsetHandler extends CommonChangeOffsetHandler {
+    
     @Override
-    public List<String> validateOffsetFields(Map<String, String> offsetFields) {
-        // Validate the common offset fields like offset-position, last-offset-position
+    O load(Map<String, ?> data) {
+        // Load the offset fields
     }
-}
 
-public class PostgresOffsetValidator extends CommonOffsetValidator {
     @Override
-    public List<String> validateOffsetFields(Map<String, String> offsetFields) {
-        // Validate the Postgres specific offset fields
+    String validate(Map<String, ?> data) {
+        // Validate the offset fields
+    }
+
+    @Override
+    List<String> getRequiredFields() {
+        // Return the required fields to change the offset
     }
 }
 ```
@@ -158,11 +177,3 @@ public class PostgresOffsetValidator extends CommonOffsetValidator {
 ### Commit Offset
 
 Upon receiving an offset change signal, the connector pauses event streaming, flushes the buffer, updates its offset position, and reloads. Once processed, it awaits offset commit acknowledgment from Kafka Connect before resuming event capture. Details of this to be discussed.
-
-
-
-
-
-
-
-
