@@ -18,9 +18,11 @@ In order to be able to receive those events from the data-source, the actual way
     <version>${version.debezium}</version>
 </dependency>
 ```
+
 This approach doesn't work out-of-the-box in situations in which [we want to build a native image of the application](https://debezium.io/blog/2025/03/12/superfast-debezium/).
 
 ## 2. Module Organization (Debezium quarkus engine with Quarkus connector)
+
 The module proposed contains the `engine` and the `connector` like in this way:
 
 ```xml
@@ -32,6 +34,7 @@ The module proposed contains the `engine` and the `connector` like in this way:
 ```
 
 With this solution, the configuration property delegated to define the connector class should be unavailable and already defined inside the extension:
+
 ```txt
 connector.class=io.debezium.connector.mysql.MySqlConnector
 ```
@@ -39,6 +42,7 @@ connector.class=io.debezium.connector.mysql.MySqlConnector
 ![](./DDD-12/s2-dbz-lib.png)
 
 ## Quarkus Debezium Extension configuration
+
 The extensions must be configurable using the properties and yaml like any Quarkus application. The configuration properties available for the debezium engine must be available using a prefix `quarkus.debezium.xxx` like:
 
 ```properties
@@ -54,16 +58,54 @@ quarkus.debezium.configuration.snapshot.mode=never
 Apart from the usual configuration properties like data source addresses, Debezium traditionally follows a _configuration over code_ approach, defining certain behavioral aspects using external configuration files interpreted at runtime. However, this approach changes in the Quarkus extension, which favors _code over configuration_—or more specifically, _annotation over configuration_. In this model, some features of the Debezium Engine are exposed through annotations, making Debezium instrumentation more expressive and developer-friendly.
 
 ## Quarkus Debezium Extension DI
+
 Debezium internally use the `ServiceRegistry` to inject and manage object lifecycle thanks to `ServiceLoader` mechanism. Quarkus includes a lightweight CDI implementation called `ArC` which can be used to manage the classes loaded through the `ServiceLoader`.
 
 ## Quarkus Debezium Extension additional feature
 
 The extension permits to address some use-cases already present in Debezium but in a _Quarkus_ way:
 
+- `Debezium Engine Lifecycle events`
 - `Debezium Listener`
 - `Custom Debezium Converter`
 
-### Quarkus  Debezium Listener
+### Quarkus Debezium Lifecycle Events
+
+We can summarize the lifecycle of a Debezium Embedded Engine in the follows steps:
+
+| Phase            | description                                                           | code                                  |
+|------------------|-----------------------------------------------------------------------|---------------------------------------|
+| *initialization* | configuration is built and the engine is created, but not yet running | after the configuration is validated  |
+| *startup*        | connectors are initialized, DB connection established                 | right after `engine.run()` is invoked |
+| *shutdown*       | engine terminates (graceful or with error)                            | observable via `CompletitionCallback` |
+
+The Quarkus Debezium extension allows you to be notified of the engine's state using the following annotation:
+
+```java
+import io.debezium.engine.source;
+
+
+@ApplicationScoped
+class DebeziumEngineLifeCycle {
+    
+    @DebeziumEngineInit()
+    public void init() {
+        /// some logic to apply
+    }
+
+    @DebeziumEngineStartup()
+    public void startup(DebeziumSourceConnectorContext context) {
+        /// some logic to apply 
+    }
+
+    @DebeziumEngineShutdown()
+    public void shutdown(Status status) {
+        /// some logic to apply
+    }
+}
+```
+
+### Quarkus Debezium Listener
 
 a Quarkus Developer using a `Debezium Listener`  can intercept events (`INSERT, UPDATE, DELETE...`) from a table like `order`, with a simple annotation like:
 
@@ -157,4 +199,5 @@ quarkus.debezium.deserializer=com.acme.order.jackson.OrderDeserializer
 ```
 
 ## Considerations
+
 This approach that is inspired by Kafka can be useful for the development of Debezium Server.
