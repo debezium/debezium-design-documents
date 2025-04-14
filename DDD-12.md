@@ -51,6 +51,8 @@ quarkus.debezium.configuration.database.dbname=postgresuser
 quarkus.debezium.configuration.snapshot.mode=never
 ```
 
+Apart from usual configuration properties like data-source addresses, Debezium has an approach _configuration over code_ which prefers configuration properties to guide the behaviour. This kind of approach change in quarkus extension in favour of _code over configuration_ (or in this case _annotation over configuration_) in which we expose some feature of _Debezium Engine_ inside annotation code to make Debezium instrumentation more expressive and developer friendly.
+
 ## Quarkus Debezium Extension additional feature
 
 The extension permits to address some use-cases already present in Debezium but in a _Quarkus_ way:
