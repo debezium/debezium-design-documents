@@ -71,6 +71,7 @@ The extension permits to address some use-cases already present in Debezium but 
 - [4.Custom Debezium Converter](#custom-debezium-converter)
 - [5.Debezium SchemaChange Listener](#quarkus-debezium-schemachange-listener)
 - [6.Debezium Snapshot Listener](#quarkus-debezium-snapshot-listener)
+- [7.Debezium PostProcess Consumer](#quarkus-debezium-postprocessor)
 
 ### Quarkus Debezium Lifecycle Events
 
@@ -274,6 +275,25 @@ class SnapshotListener {
     public void completed(SnapshotEvent event) {
         /// some logic to apply
     }
+}
+```
+
+### Quarkus Debezium PostProcessor
+
+In Debezium Embedded Engine, a PostProcessor is an internal hook used to modify or transform events right before they are emitted to the application’s `.notifying()` callback. In the quarkus extension can be accessible by:
+
+```java
+import io.debezium.engine.InsertEvent;
+import jakarta.enterprise.context.ApplicationScoped;
+
+@ApplicationScoped  
+class CustomPostProcessor {  
+  
+    @DebeziumPostProcessor()  
+    public void process(Object key, Struct value) {
+        /// some logic to apply
+    }
+    
 }
 ```
 
