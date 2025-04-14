@@ -70,7 +70,7 @@ The extension permits to address some use-cases already present in Debezium but 
 - [3.Debezium Listener](#quarkus-debezium-listener)
 - [4.Custom Debezium Converter](#custom-debezium-converter)
 - [5.Debezium SchemaChange Listener](#quarkus-debezium-schemachange-listener)
-- [6.Debezium Snapshot Listener]()
+- [6.Debezium Snapshot Listener](#quarkus-debezium-snapshot-listener)
 
 ### Quarkus Debezium Lifecycle Events
 
