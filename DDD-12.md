@@ -69,6 +69,7 @@ The extension permits to address some use-cases already present in Debezium but 
 - [2.Debezium Heartbeat events](#quarkus-debezium-heartbeats-events)
 - [3.Debezium Listener](#quarkus-debezium-listener)
 - [4.Custom Debezium Converter](#custom-debezium-converter)
+- [5.Debezium SchemaChange Listener]()
 
 ### Quarkus Debezium Lifecycle Events
 
@@ -234,6 +235,23 @@ public class OrderDeserializer extends ObjectMapperDeserializer<Order> {
 
 ```properties
 quarkus.debezium.deserializer=com.acme.order.jackson.OrderDeserializer
+```
+
+### Quarkus Debezium SchemaChange Listener
+Debezium automatically detects and captures schema changes in the source database, such as adding or removing columns, modifying data types, or altering primary keys. These changes are parsed from the database's DDL statements and used to update Debezium's internal schema history, ensuring that change events reflect the current table structure. The Quarkus extension can expose a listener to such kind of event:
+
+```java
+import io.debezium.engine.InsertEvent;
+import jakarta.enterprise.context.ApplicationScoped;
+
+@ApplicationScoped  
+class SchemaChangeListener {  
+  
+    @DebeziumSchemaChangeListener()  
+    public void listener(SchemaChangeEvent event) {  
+        /// some logic to apply
+    }  
+}
 ```
 
 ## Considerations
