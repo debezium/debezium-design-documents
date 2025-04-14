@@ -53,6 +53,9 @@ quarkus.debezium.configuration.snapshot.mode=never
 
 Apart from the usual configuration properties like data source addresses, Debezium traditionally follows a _configuration over code_ approach, defining certain behavioral aspects using external configuration files interpreted at runtime. However, this approach changes in the Quarkus extension, which favors _code over configuration_—or more specifically, _annotation over configuration_. In this model, some features of the Debezium Engine are exposed through annotations, making Debezium instrumentation more expressive and developer-friendly.
 
+## Quarkus Debezium Extension DI
+Debezium internally use the `ServiceRegistry` to inject and manage object lifecycle thanks to `ServiceLoader` mechanism. Quarkus includes a lightweight CDI implementation called `ArC` which can be used to manage the classes loaded through the `ServiceLoader`.
+
 ## Quarkus Debezium Extension additional feature
 
 The extension permits to address some use-cases already present in Debezium but in a _Quarkus_ way:
