@@ -70,6 +70,7 @@ The extension permits to address some use-cases already present in Debezium but 
 - [3.Debezium Listener](#quarkus-debezium-listener)
 - [4.Custom Debezium Converter](#custom-debezium-converter)
 - [5.Debezium SchemaChange Listener](#quarkus-debezium-schemachange-listener)
+- [6.Debezium Snapshot Listener]()
 
 ### Quarkus Debezium Lifecycle Events
 
@@ -251,6 +252,28 @@ class SchemaChangeListener {
     public void listener(SchemaChangeEvent event) {  
         /// some logic to apply
     }  
+}
+```
+
+### Quarkus Debezium Snapshot Listener
+The snapshot is Debezium’s initial data capture phase. It reads the current state of selected tables and emits each row as a change event. This happens once at startup (unless disabled) to ensure consumers start with a complete dataset before live change streaming begins. It can be observed with the Quarkus Extension thanks to the following annotations:
+
+```java
+import io.debezium.engine.InsertEvent;
+import jakarta.enterprise.context.ApplicationScoped;
+
+@ApplicationScoped  
+class SnapshotListener {  
+  
+    @DebeziumSnapshotStarted()  
+    public void started(SnapshotEvent event) {
+        /// some logic to apply
+    }
+    
+    @DebeziumSnapshotCompleted()
+    public void completed(SnapshotEvent event) {
+        /// some logic to apply
+    }
 }
 ```
 
