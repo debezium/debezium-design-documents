@@ -66,8 +66,44 @@ Debezium internally use the `ServiceRegistry` to inject and manage object lifecy
 The extension permits to address some use-cases already present in Debezium but in a _Quarkus_ way:
 
 - `Debezium Engine Lifecycle events`
+- `Debezium Heartbeats events`
 - `Debezium Listener`
 - `Custom Debezium Converter`
+
+### Quarkus Debezium Heartbeats events
+In Debezium, heartbeat events are lightweight, periodic messages emitted when no database changes occur. They confirm that the connector is alive and still connected to the source, helping to detect liveness. In the Quarkus Debezium Extension can detect heartbeats events in this way:
+
+```java
+import io.debezium.engine.ChangeEvent;
+import jakarta.enterprise.context.ApplicationScoped;  
+
+
+@ApplicationScoped  
+class HeartbeatListener {
+  
+    @DebeziumHeartbeat()  
+    public void heartbeat(ChangeEvent<String, String> event) {  
+        /// some logic to apply 
+    }  
+}
+```
+
+it's possible to define the `heartbeat.action.query` and `heartbeat.interval.ms` interval in case of relational databases:
+
+```java
+import io.debezium.engine.ChangeEvent;
+import jakarta.enterprise.context.ApplicationScoped;  
+
+
+@ApplicationScoped  
+class HeartbeatListener {
+  
+    @DebeziumHeartbeat(query="SELECT now()", interval=10000)  
+    public void heartbeat(ChangeEvent<String, String> event) {  
+        /// some logic to apply 
+    }  
+}
+```
 
 ### Quarkus Debezium Lifecycle Events
 
@@ -83,6 +119,7 @@ The Quarkus Debezium extension allows you to be notified of the engine's state u
 
 ```java
 import io.debezium.engine.source;
+import jakarta.enterprise.context.ApplicationScoped;
 
 
 @ApplicationScoped
