@@ -51,7 +51,7 @@ quarkus.debezium.configuration.database.dbname=postgresuser
 quarkus.debezium.configuration.snapshot.mode=never
 ```
 
-Apart from usual configuration properties like data-source addresses, Debezium has an approach _configuration over code_ which prefers configuration properties to guide the behaviour. This kind of approach change in quarkus extension in favour of _code over configuration_ (or in this case _annotation over configuration_) in which we expose some feature of _Debezium Engine_ inside annotation code to make Debezium instrumentation more expressive and developer friendly.
+Apart from the usual configuration properties like data source addresses, Debezium traditionally follows a _configuration over code_ approach, defining certain behavioral aspects using external configuration files interpreted at runtime. However, this approach changes in the Quarkus extension, which favors _code over configuration_—or more specifically, _annotation over configuration_. In this model, some features of the Debezium Engine are exposed through annotations, making Debezium instrumentation more expressive and developer-friendly.
 
 ## Quarkus Debezium Extension additional feature
 
@@ -96,7 +96,7 @@ class OrderListener {
 }
 ```
 
-even listen only a certain type of event
+even listen only a certain type of event (using for example the configuration `skipped.operations`)
 
 ```java
 import io.debezium.engine.InsertEvent;
