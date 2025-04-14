@@ -43,7 +43,6 @@ The extensions must be configurable using the properties and yaml like any Quark
 
 ```properties
 quarkus.debezium.configuration.offset.storage=org.apache.kafka.connect.storage.MemoryOffsetBackingStore
-quarkus.debezium.configuration.name=native
 quarkus.debezium.configuration.database.hostname=localhost
 quarkus.debezium.configuration.database.port=5432
 quarkus.debezium.configuration.database.user=postgresuser
