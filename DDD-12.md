@@ -69,7 +69,7 @@ The extension permits to address some use-cases already present in Debezium but 
 - [2.Debezium Heartbeat events](#quarkus-debezium-heartbeats-events)
 - [3.Debezium Listener](#quarkus-debezium-listener)
 - [4.Custom Debezium Converter](#custom-debezium-converter)
-- [5.Debezium SchemaChange Listener]()
+- [5.Debezium SchemaChange Listener](#quarkus-debezium-schemachange-listener)
 
 ### Quarkus Debezium Lifecycle Events
 
