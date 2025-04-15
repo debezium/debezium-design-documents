@@ -68,10 +68,11 @@ The extension permits to address some use-cases already present in Debezium but 
 - [1.Debezium Engine Lifecycle events](#quarkus-debezium-lifecycle-events)
 - [2.Debezium Heartbeat events](#quarkus-debezium-heartbeats-events)
 - [3.Debezium Listener](#quarkus-debezium-listener)
-- [4.Custom Debezium Converter](#custom-debezium-converter)
+- [4.Debezium Custom Data Converter](#custom-debezium-data-converter)
 - [5.Debezium SchemaChange Listener](#quarkus-debezium-schemachange-listener)
 - [6.Debezium Snapshot Listener](#quarkus-debezium-snapshot-listener)
 - [7.Debezium PostProcess Consumer](#quarkus-debezium-postprocessor)
+- [8.Debezium Custom Converter](#)
 
 ### Quarkus Debezium Lifecycle Events
 
@@ -199,7 +200,7 @@ class OrderListener {
 }
 ```
 
-### Custom Debezium Converter
+### Custom Debezium Data Converter
 
 It should be possible to receive events mapped as data classes like:
 
@@ -292,6 +293,27 @@ class CustomPostProcessor {
     @DebeziumPostProcessor()  
     public void process(Object key, Struct value) {
         /// some logic to apply
+    }
+    
+}
+```
+
+### Quarkus Debezium Custom Converter
+A custom converter in Debezium is a way to transform specific column values as they're read from the source database before they're emitted in the change event.
+
+
+#### Quarkus Debezium Relational Converter
+
+```java
+import io.debezium.engine.InsertEvent;
+import jakarta.enterprise.context.ApplicationScoped;
+
+@ApplicationScoped
+class RawToStringConverter {
+
+    @DebeziumRelationalConverter(typeName="RAW")
+    public ConverterDefinition<SchemaBuilder> bind(RelationalColumn raw) { 
+        return new ConverterDefinition<>(SchemaBuilder.string(), Object::toString);
     }
     
 }
