@@ -319,6 +319,8 @@ class RawToStringConverter {
 }
 ```
 
+*example based on a simplified [RawToStringConverter](https://github.com/debezium/debezium/blob/42c3ea529d8e955b1e1fad0b0e2b1fb325e5ec87/debezium-connector-oracle/src/main/java/io/debezium/connector/oracle/converters/RawToStringConverter.java#L35).
+
 ## Considerations
 
 This approach that is inspired by Kafka can be useful for the development of Debezium Server.
