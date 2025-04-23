@@ -70,7 +70,7 @@ The extension permits to address some use-cases already present in Debezium but 
 - [3.Debezium Listener](#quarkus-debezium-listener)
 - [4.Debezium Custom Data Converter](#custom-debezium-data-converter)
 - [5.Debezium SchemaChange Listener](#quarkus-debezium-schemachange-listener)
-- [6.Debezium Snapshot Listener](#quarkus-debezium-snapshot-listener)
+- [6.Debezium Notification Handler](#quarkus-debezium-notification-handler)
 - [7.Debezium PostProcess Consumer](#quarkus-debezium-postprocessor)
 - [8.Debezium Custom Converter](#quarkus-debezium-custom-converter)
 
@@ -257,8 +257,8 @@ class SchemaChangeListener {
 }
 ```
 
-### Quarkus Debezium Snapshot Listener
-The snapshot is Debezium’s initial data capture phase. It reads the current state of selected tables and emits each row as a change event. This happens once at startup (unless disabled) to ensure consumers start with a complete dataset before live change streaming begins. It can be observed with the Quarkus Extension thanks to the following annotations:
+### Quarkus Debezium Notification Handler
+Debezium [notifications](https://debezium.io/documentation/reference/3.1/configuration/notification.html) provide a mechanism to obtain status information about the connector. It should be possible to receive notifications in the quarkus extension like:
 
 ```java
 import io.debezium.engine.InsertEvent;
@@ -267,15 +267,11 @@ import jakarta.enterprise.context.ApplicationScoped;
 @ApplicationScoped  
 class SnapshotListener {  
   
-    @DebeziumSnapshotStarted()  
-    public void started(SnapshotEvent event) {
+    @DebeziumNotificationHandler()  
+    public void handler(Notification notification) {
         /// some logic to apply
     }
     
-    @DebeziumSnapshotCompleted()
-    public void completed(SnapshotEvent event) {
-        /// some logic to apply
-    }
 }
 ```
 
