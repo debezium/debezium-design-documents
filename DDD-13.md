@@ -74,7 +74,73 @@ Let's explore how the different formats appear for describing connector properti
           "message": "Each item must be a valid regular expression"
         }
       ]
-    }
+    },
+     {
+        "name": "connection.adapter",
+        "type": "string",
+        "display": {
+           "label": "Connector adapter",
+           "description": "The adapter to use when capturing changes from the database.",
+           "group": "Connection advanced",
+           "groupOrder": 1,
+           "width": "medium",
+           "importance": "high"
+        },
+        "valueDependants": [
+           {
+              "values": ["LogMiner"],
+              "dependants": ["log.mining.buffer.type"]
+           }
+        ],
+        "validation": [
+           {
+              "type": "regex",
+              "pattern": "[XStream|LogMiner|LogMiner_Unbuffered|OLR]",
+              "message": "Permitted value are: XStream, LogMiner, LogMiner_Unbuffered, OLR"
+           }
+        ]
+     },
+     {
+        "name": "log.mining.buffer.type",
+        "type": "string",
+        "display": {
+           "label": "Controls which buffer type implementation to be used",
+           "description": "The buffer type controls how the connector manages buffering transaction data.",
+           "group": "Connection advanced",
+           "groupOrder": 2,
+           "width": "medium",
+           "importance": "low"
+        },
+        "valueDependants": [
+           {
+              "values": ["ehcache"],
+              "dependants": [
+                 "log.mining.buffer.ehcache.global.config",
+                 "log.mining.buffer.ehcache.transactions.config",
+                 "log.mining.buffer.ehcache.processedtransactions.config",
+                 "log.mining.buffer.ehcache.schemachanges.config",
+                 "log.mining.buffer.ehcache.events.config"
+              ]
+           },
+           {
+              "values": ["infinispan_embedded", "infinispan_remote"],
+              "dependants": [
+                 "log.mining.buffer.infinispan.cache.global",
+                 "log.mining.buffer.infinispan.cache.transactions",
+                 "log.mining.buffer.ehcache.processedtransactions.config",
+                 "log.mining.buffer.infinispan.cache.schema_changes",
+                 "log.mining.buffer.infinispan.cache.events"
+              ]
+           }
+        ],
+        "validation": [
+           {
+              "type": "regex",
+              "pattern": "[memory|infinispan_embedded|infinispan_remote|ehcache]",
+              "message": "Permitted value are: memory, infinispan_embedded, infinispan_remote, ehcache"
+           }
+        ]
+     }
   ],
   "groups": [
     {
