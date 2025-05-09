@@ -21,7 +21,7 @@ In order to be able to receive those events from the data-source, the actual way
 
 This approach doesn't work out-of-the-box in situations in which [we want to build a native image of the application](https://debezium.io/blog/2025/03/12/superfast-debezium/).
 
-## 2. Module Organization (Debezium quarkus engine with Quarkus connector)
+## Module Organization (Debezium quarkus engine with Quarkus connector)
 
 The module proposed contains the `engine` and the `connector` like in this way:
 
@@ -65,14 +65,62 @@ Debezium internally use the `ServiceRegistry` to inject and manage object lifecy
 
 The extension permits to address some use-cases already present in Debezium but in a _Quarkus_ way:
 
-- [1.Debezium Engine Lifecycle events](#quarkus-debezium-lifecycle-events)
-- [2.Debezium Heartbeat events](#quarkus-debezium-heartbeats-events)
-- [3.Debezium Listener](#quarkus-debezium-listener)
-- [4.Debezium Custom Data Converter](#custom-debezium-data-converter)
-- [5.Debezium SchemaChange Listener](#quarkus-debezium-schemachange-listener)
-- [6.Debezium Notification Handler](#quarkus-debezium-notification-handler)
-- [7.Debezium PostProcess Consumer](#quarkus-debezium-postprocessor)
-- [8.Debezium Custom Converter](#quarkus-debezium-custom-converter)
+- [1.Debezium Engine Instance](#quarkus-debezium-engine-instance)
+- [2.Debezium Engine Lifecycle events](#quarkus-debezium-lifecycle-events)
+- [3.Debezium Heartbeat events](#quarkus-debezium-heartbeats-events)
+- [4.Debezium Listener](#quarkus-debezium-listener)
+- [5.Debezium Custom Data Converter](#custom-debezium-data-converter)
+- [6.Debezium SchemaChange Listener](#quarkus-debezium-schemachange-listener)
+- [7.Debezium Notification Handler](#quarkus-debezium-notification-handler)
+- [8.Debezium PostProcess Consumer](#quarkus-debezium-postprocessor)
+- [9.Debezium Custom Converter](#quarkus-debezium-custom-converter)
+
+### Quarkus Debezium Engine Instance
+
+The proposal introduces an interface `Debezium` as an abstraction that exposes the engine's snapshot status.
+
+```java
+/**
+ * The Debezium engine abstraction in the Quarkus CDI
+ * <p>
+ * The Engine is submitted to an {@link Executor} or {@link ExecutorService} for execution by a single thread
+ */
+public interface Debezium {
+
+    /**
+     * @return engine's signaler, if it supports signaling
+     * @throws UnsupportedOperationException if signaling is not supported by this engine
+     */
+    Signaler signaler();
+
+    /**
+     * @return engine's configuration
+     */
+    Map<String, String> configuration();
+
+    /**
+     * @return engine's status information
+     */
+    DebeziumManifest manifest();
+}
+```
+
+example of usage:
+
+```java
+@Path("/api/debezium")
+public class DebeziumEndpoint {
+
+    @Inject
+    private Debezium debezium;
+
+    @GET
+    @Path("manifest")
+    public DebeziumManifest getManifest() {
+        return debezium.manifest();
+    }
+}
+```
 
 ### Quarkus Debezium Lifecycle Events
 
@@ -122,26 +170,8 @@ import jakarta.enterprise.context.ApplicationScoped;
 
 @ApplicationScoped  
 class HeartbeatListener {
-  
-    @DebeziumHeartbeat()  
-    public void heartbeat(ChangeEvent<String, String> event) {  
-        /// some logic to apply 
-    }  
-}
-```
-
-it's possible to define the `heartbeat.action.query` and `heartbeat.interval.ms` interval in case of relational databases:
-
-```java
-import io.debezium.engine.ChangeEvent;
-import jakarta.enterprise.context.ApplicationScoped;  
-
-
-@ApplicationScoped  
-class HeartbeatListener {
-  
-    @DebeziumHeartbeat(query="SELECT now()", interval=10000)  
-    public void heartbeat(ChangeEvent<String, String> event) {  
+    
+    public void heartbeat(@Observes DebeziumHeartbeat event) {  
         /// some logic to apply 
     }  
 }
@@ -200,6 +230,8 @@ class OrderListener {
 }
 ```
 
+It will support also `SourceRecord` objects.
+
 ### Custom Debezium Data Converter
 
 It should be possible to receive events mapped as data classes like:
@@ -241,7 +273,7 @@ quarkus.debezium.deserializer=com.acme.order.jackson.OrderDeserializer
 ```
 
 ### Quarkus Debezium SchemaChange Listener
-Debezium automatically detects and captures schema changes in the source database, such as adding or removing columns, modifying data types, or altering primary keys. These changes are parsed from the database's DDL statements and used to update Debezium's internal schema history, ensuring that change events reflect the current table structure. The Quarkus extension can expose a listener to such kind of event:
+Debezium automatically detects and captures schema changes in the source database, such as adding or removing columns, modifying data types, or altering primary keys. These changes are parsed from the database's DDL statements and used to update Debezium's internal schema history, ensuring that change events reflect the current table structure. The Quarkus extension can expose a `SchemaChangeEvent` that can be `observed`:
 
 ```java
 import io.debezium.engine.InsertEvent;
@@ -249,9 +281,8 @@ import jakarta.enterprise.context.ApplicationScoped;
 
 @ApplicationScoped  
 class SchemaChangeListener {  
-  
-    @DebeziumSchemaChangeListener()  
-    public void listener(SchemaChangeEvent event) {  
+    
+    public void listener(@Observes DebeziumSchemaChange event) {  
         /// some logic to apply
     }  
 }
@@ -266,9 +297,8 @@ import jakarta.enterprise.context.ApplicationScoped;
 
 @ApplicationScoped  
 class SnapshotListener {  
-  
-    @DebeziumNotificationHandler()  
-    public void handler(Notification notification) {
+    
+    public void handler(@Observes DebeziumNotification notification) {
         /// some logic to apply
     }
     
