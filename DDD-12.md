@@ -142,18 +142,15 @@ import jakarta.enterprise.context.ApplicationScoped;
 @ApplicationScoped
 class DebeziumEngineLifeCycle {
     
-    @DebeziumEngineInit()
-    public void init() {
+    public void init(@Observes DebeziumConfigured event) {
         /// some logic to apply
     }
-
-    @DebeziumEngineStartup()
-    public void startup(DebeziumSourceConnectorContext context) {
+    
+    public void startup(@Observes DebeziumStarted event) {
         /// some logic to apply 
     }
-
-    @DebeziumEngineShutdown()
-    public void shutdown(Status status) {
+    
+    public void shutdown(@Observes DebeziumShutdown event) {
         /// some logic to apply
     }
 }
