@@ -186,8 +186,8 @@ import jakarta.enterprise.context.ApplicationScoped;
 @ApplicationScoped  
 class OrderListener {
   
-    @DebeziumListener("order")  
-    public void listener(ChangeEvent<String, String> event) {  
+    @Capturing("order")  
+    public void capture(ChangeEvent<String, String> event) {  
         /// some logic to apply 
     }  
 }
@@ -203,8 +203,8 @@ import jakarta.enterprise.context.ApplicationScoped;
 @ApplicationScoped  
 class OrderListener {
   
-    @DebeziumBatchListener("order")  
-    public void listener(List<ChangeEvent<String, String>> events) {  
+    @Capturings("order")  
+    public void capture(List<ChangeEvent<String, String>> events) {  
         /// some logic to apply
     }  
 }
@@ -220,8 +220,8 @@ import io.debezium.engine.quarkus.Operation.INSERT;
 @ApplicationScoped  
 class OrderListener {
   
-    @DebeziumBatchListener("order", INSERT)  
-    public void listener(List<InsertEvent<String, String>> events) {  
+    @Capturings("order", INSERT)  
+    public void capture(List<InsertEvent<String, String>> events) {  
         /// some logic to apply
     }  
 }
@@ -244,7 +244,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 @ApplicationScoped  
 class OrderListener {  
   
-    @DebeziumListener("order")  
+    @Capturing("order")  
     public void listener(InsertEvent<String, Order> event) {  
         /// some logic to apply
     }  
