@@ -1,6 +1,6 @@
 # Quarkus Debezium Cache/Search Invalidation
 
-Second‑level cache (L2C) and Search index can boost applications but becomes stale when database changes bypass the ORM without a way to notify applications of the changes. Debezium can capture those external changes from the DB transaction log and trigger near‑real‑time evictions of affected cache entries. Debezium Extensions for Quarkus inside a Quarkus app allows registering a `@Capturing` method that evicts the corresponding entity from L2C on UPDATE/DELETE events. We propose a new Quarkus Extension that automatically creates the handlers for eviction.
+Second‑level cache (L2C) and Search index can boost applications but becomes stale when database changes bypass the ORM without a way to notify applications of the changes. Debezium can capture those external changes from the DB transaction log and trigger near‑real‑time evictions of affected cache entries or a reindex. Debezium Extensions for Quarkus inside a Quarkus app allows registering a `@Capturing` method that can update the corresponding entity on CDC events. We propose a new Quarkus Extension that automatically creates the handlers for refreshing session-based data like hibernate L2C and search.
 
 ## Module Organization
 
