@@ -157,3 +157,6 @@ The extension should scan for JPA/Hibernate metamodel at startup and identify al
 ```
 
 
+## References
+
+- [Automating Cache Invalidation With Change Data Capture](https://debezium.io/blog/2018/12/05/automating-cache-invalidation-with-change-data-capture/)
