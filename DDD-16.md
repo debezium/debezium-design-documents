@@ -76,7 +76,33 @@ which are the datasource common configuration for agroal and the offset storage.
 
 ### Hibernate Cache Eviction
 
-The extension should scan for JPA/Hibernate metamodel at startup and identify all the entities that are under L2C (`Cacheable`) and register a generic `@Capturing` handler delegated to evict the cache. Here a snippet that explain the idea:
+The extension should identify the cache mode (`SharedCacheMode`) which can have the following options:
+
+- `ALL`: cache all entities (unless they explicitly opt out with @Cacheable(false)).
+- `NONE`: don’t cache any entities (second-level cache disabled for entities).
+- `ENABLE_SELECTIVE`: only cache entities annotated with @Cacheable(true).
+- `DISABLE_SELECTIVE`: cache all entities except those with @Cacheable(false).
+
+The shared cache mode is often present in the EMF properties:
+
+```java
+import org.hibernate.engine.spi.SessionFactoryImplementor;
+import jakarta.persistence.SharedCacheMode;
+import org.hibernate.engine.spi.SessionFactoryImplementor;
+
+EntityManagerFactory emf = ...;
+SessionFactoryImplementor sfi = emf.unwrap(SessionFactoryImplementor.class);
+SharedCacheMode mode = sfi.getSessionFactoryOptions().getSharedCacheMode();
+
+// check if the 2LC is actually enabled
+
+SessionFactoryImplementor sfi = emf.unwrap(SessionFactoryImplementor.class);
+boolean l2Enabled = sfi.getSessionFactoryOptions().isSecondLevelCacheEnabled();
+```
+
+Based on the shared cache mode, the extension should apply a scan strategy for JPA/Hibernate metamodel at startup and identify the entities that are under L2C and register a generic `@Capturing` handler delegated to evict the cache. 
+
+Here a pseudo code snippet that explain the handler:
 
 ```java
     @ApplicationScoped
@@ -99,7 +125,6 @@ The extension should scan for JPA/Hibernate metamodel at startup and identify al
         }
 
     }
-
 ```
 
 Hibernate can load the same entity in many different shapes depending on how it was fetched:
