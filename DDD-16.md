@@ -92,7 +92,6 @@ The extension should scan for JPA/Hibernate metamodel at startup and identify al
                 Long itemId = ((Struct) record.key()).getInt64(registry.get(record.topic()).key());
                 Struct payload = (Struct) record.value();
                 Operation op = Operation.forCode(payload.getString("op"));
-
                 if (op == Operation.UPDATE || op == Operation.DELETE) {
                     emf.getCache().evict(Item.class, itemId);
                 }
@@ -101,6 +100,24 @@ The extension should scan for JPA/Hibernate metamodel at startup and identify al
 
     }
 
+```
+
+Hibernate can load the same entity in many different shapes depending on how it was fetched:
+
+- with a dynamic fetch graph
+- with a JOIN FETCH
+- with some associations eagerly loaded
+- with others left lazy
+
+If we refresh the entity without that context, we'd likely evict it and only reload a subset of the original cached data.
+
+#### Solutions
+
+Evicting a whole region forces Hibernate to rebuild all cached entries from their next natural load, avoiding shape inconsistencies.
+
+```java
+sessionFactory.getCache()
+    .evictEntityRegion(Item.class);
 ```
 
 ### Hibernate Search Explicit Reindex
