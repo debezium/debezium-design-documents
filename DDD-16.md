@@ -4,31 +4,12 @@ Second‑level cache (L2C) and Search index can boost applications but becomes s
 
 ## Module Organization
 
-### First Proposal
-
-A developer should import the extension and the relative datasource in the following way:
-
-```xml
-<dependency>
-    <groupId>io.debezium</groupId>
-    <artifactId>debezium-quarkus-invalidation</artifactId>
-    <version>${version.debezium}</version>
-</dependency>
-<dependency>
-    <groupId>io.debezium</groupId>
-    <artifactId>debezium-quarkus-postgres</artifactId>
-    <version>${version.debezium}</version>
-</dependency>
-```
-
-### Second Proposal
-
 A developer should import the extension and the relative datasource for cache invalidation:
 
 ```xml
 <dependency>
     <groupId>io.debezium</groupId>
-    <artifactId>debezium-quarkus-cache-invalidation</artifactId>
+    <artifactId>debezium-quarkus-hibernate-cache</artifactId>
     <version>${version.debezium}</version>
 </dependency>
 <dependency>
@@ -43,7 +24,7 @@ and in this way for reindex:
 ```xml
 <dependency>
     <groupId>io.debezium</groupId>
-    <artifactId>debezium-quarkus-search-index</artifactId>
+    <artifactId>debezium-quarkus-hibernate-search-reindex</artifactId>
     <version>${version.debezium}</version>
 </dependency>
 <dependency>
@@ -144,7 +125,7 @@ The extension should scan for JPA/Hibernate metamodel at startup and identify al
                 Struct payload = (Struct) record.value();
                 Operation op = Operation.forCode(payload.getString("op"));
 
-                if (op == Operation.UPDATE || op == Operation.DELETE) {
+                if (op == Operation.INSERT || op == Operation.UPDATE || op == Operation.DELETE) {
                     MyEntity entity = entityManager.find(MyEntity.class, itemId);
                     searchSession.indexingPlan().addOrUpdate(entity);
 
