@@ -565,6 +565,10 @@ as the information contained in the description needs to be used during the crea
 
 This requires the descriptors to be available to the platform conductor before running the Debezium server instance.
 
+The figure below shows the high-level architecture, including support for both official Debezium descriptors and custom user-provided descriptors.
+
+![Debezium Platform - Descriptor service](DDD-13/platform-descriptor.png)
+
 ### Descriptor Registry and Distribution
 
 The descriptors will be generated during the Debezium release process and published to a dedicated GitHub repository (`debezium-descriptors-registry`).
@@ -637,6 +641,44 @@ A shared volume (emptyDir or persistent volume) would be mounted in both the ini
 The init container would copy the descriptor files from the OCI artifact to the shared volume during pod initialization.
 The main conductor container would then access these files from the shared volume and serve them via the REST API.
 
+### Supporting Custom Components
+
+Users who develop custom components (connectors, transformations, or sinks) will need to provide descriptors for these components to make them available in the Debezium Platform UI.
+
+#### Generating Custom Descriptors
+
+Users can generate descriptors for their custom components using the `debezium-schema-generator` tool. Since custom components implement the standard Kafka Connect interfaces (`Connector`, `Transformation`, etc.) with the `ConfigDef config()` method, the generator can automatically extract configuration metadata.
+
+The generation process can be integrated into the user's build pipeline to automatically create descriptor files whenever custom components are built.
+
+#### Packaging Custom Descriptors
+
+Users should package their custom descriptors as OCI artifacts following the same structure as the official `debezium-descriptors-registry`:
+
+```
+my-custom-descriptors/
+├── 1.0.0/
+│   ├── manifest.json
+│   └── transformations/
+│       └── my-custom-transform.json
+└── latest -> 1.0.0/
+```
+
+This OCI artifact can be built using the same approach as the official registry and pushed to a container registry accessible by the Kubernetes cluster (e.g., `acme/debezium-customs-descriptors:3.x`).
+
+#### Mounting Multiple Descriptor Sources
+
+The conductor pod supports mounting multiple descriptor sources simultaneously using image volumes (or init containers). The official Debezium descriptors and user-provided custom descriptors are mounted as separate volumes, allowing the REST API to discover and serve descriptors from all available sources.
+
+Users are responsible for ensuring their custom descriptor names do not conflict with official Debezium component names. Since custom components represent new implementations rather than overrides of existing ones, conflicts should naturally be avoided through proper naming conventions.
+
+#### Future Tooling
+
+While users can initially leverage the `debezium-schema-generator` for creating custom descriptors, dedicated tooling may be provided in the future to simplify the generation and packaging workflow. This could include:
+- CLI tools for generating descriptors from custom component JARs
+- Build plugins for Maven/Gradle to automate descriptor generation
+- Templates and examples for creating OCI artifacts with custom descriptors
+
 ## Proposed changes
 
 1. Modify the `debezium-schema-generator` to generate descriptors with the new format.
@@ -649,9 +691,12 @@ The main conductor container would then access these files from the shared volum
    1. Set up the repository structure for version-organized descriptor files
    2. Implement a GitHub workflow that builds an OCI artifact from the repository content on main branch pushes
    3. Configure the workflow to push the OCI artifact to quay.io under the Debezium organization
-5. Implement the REST API in the conductor to serve descriptor files to the frontend application
+5. Implement the REST API in the conductor to serve descriptor files to the frontend application:
+   1. Support discovery and serving of descriptors from multiple mounted sources (official + custom)
+   2. Implement endpoint(s) to list and retrieve available component descriptors
 6. Update the Debezium Platform Helm chart:
    1. Add support for mounting the descriptor OCI artifact as an image volume
-   2. Provide configuration options for using the init container alternative approach for Kubernetes versions prior to 1.35
+   2. Provide configuration options for mounting additional custom descriptor OCI artifacts
+   3. Provide configuration options for using the init container alternative approach for Kubernetes versions prior to 1.35
 
 > **_Note:_** Point 2 can be postponed to the end so that we can go through the whole pieces having only the connector descriptors and then add the others.
