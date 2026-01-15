@@ -410,6 +410,17 @@ We exclude more complex formats like [OAS](https://swagger.io/specification/), a
 
 Given that JSON is easy to read/write and commonly used in frontend applications, it is the easiest choice.
 
+### Value-based Dependencies
+
+The descriptor format supports expressing dependencies between properties based on specific values through the `valueDependants` field. This allows the UI to show or hide configuration properties dynamically based on the selected value of another property.
+
+As shown in the JSON example above, `valueDependants` is an array of objects, where each object specifies:
+- `values`: An array of string values that trigger the dependency
+- `dependants`: An array of property names that become relevant when the parent property has one of the specified values
+
+For example, when `connection.adapter` is set to `"LogMiner"`, the property `log.mining.buffer.type` becomes relevant. Similarly, when `log.mining.buffer.type` is set to `"ehcache"`, all the ehcache-specific configuration properties become relevant.
+
+This feature improves the user experience by reducing configuration complexity, showing users only the properties that are applicable to their specific configuration choices.
 
 ## Generate descriptors
 
@@ -450,6 +461,16 @@ The `Field` class contains the information used to describe a configuration prop
     private final boolean isRequired;
     private final java.util.Set<String> deprecatedAliases;
 ```
+
+The `Field` class currently supports a generic `dependents` list but does not support value-based dependencies. 
+To enable the `valueDependants` feature described in the descriptor format, a new method needs to be added:
+
+```java
+public Field withDependents(String fieldValue, String... dependents)
+```
+
+This method allows specifying which dependent fields become relevant when the current field has a specific value, enabling the schema generator to produce descriptors with proper value-based dependency information.
+
 
 | Pro                           | Cons                                                     |
 |-------------------------------|----------------------------------------------------------|
@@ -681,22 +702,27 @@ While users can initially leverage the `debezium-schema-generator` for creating 
 
 ## Proposed changes
 
-1. Modify the `debezium-schema-generator` to generate descriptors with the new format.
-2. Modify the `debezium-schema-generator` to generate descriptors for other components (transforms, predicates, etc.).
+1. Add support for value-based dependencies in `io.debezium.config.Field`:
+   1. Implement the new `withDependents(String fieldValue, String... dependents)` method
+   2. Update the internal data structures to store value-based dependency mappings
+   3. Update connectors to use this method for declaring value-based dependencies
+2. Modify the `debezium-schema-generator` to generate descriptors with the new format:
+   1. Add support for generating `valueDependants` field from the Field class dependency information
+3. Modify the `debezium-schema-generator` to generate descriptors for other components (transforms, predicates, etc.).
    1. If we go for the KIP to have a common interface, until it is approved, we can just look for the different interfaces.
-3. Integrate descriptor generation into the Debezium release process:
+4. Integrate descriptor generation into the Debezium release process:
    1. Configure the build to generate descriptors during release
    2. Automatically publish generated descriptors to the `debezium-descriptors-registry` repository, organized by version
-4. Create the `debezium-descriptors-registry` GitHub repository:
+5. Create the `debezium-descriptors-registry` GitHub repository:
    1. Set up the repository structure for version-organized descriptor files
    2. Implement a GitHub workflow that builds an OCI artifact from the repository content on main branch pushes
    3. Configure the workflow to push the OCI artifact to quay.io under the Debezium organization
-5. Implement the REST API in the conductor to serve descriptor files to the frontend application:
+6. Implement the REST API in the conductor to serve descriptor files to the frontend application:
    1. Support discovery and serving of descriptors from multiple mounted sources (official + custom)
    2. Implement endpoint(s) to list and retrieve available component descriptors
-6. Update the Debezium Platform Helm chart:
+7. Update the Debezium Platform Helm chart:
    1. Add support for mounting the descriptor OCI artifact as an image volume
    2. Provide configuration options for mounting additional custom descriptor OCI artifacts
    3. Provide configuration options for using the init container alternative approach for Kubernetes versions prior to 1.35
 
-> **_Note:_** Point 2 can be postponed to the end so that we can go through the whole pieces having only the connector descriptors and then add the others.
+> **_Note:_** Point 3 can be postponed to the end so that we can go through the whole pieces having only the connector descriptors and then add the others.
