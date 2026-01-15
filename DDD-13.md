@@ -127,7 +127,7 @@ Let's explore how the different formats appear for describing connector properti
               "dependants": [
                  "log.mining.buffer.infinispan.cache.global",
                  "log.mining.buffer.infinispan.cache.transactions",
-                 "log.mining.buffer.ehcache.processedtransactions.config",
+                 "log.mining.buffer.infinispan.processedtransactions.config",
                  "log.mining.buffer.infinispan.cache.schema_changes",
                  "log.mining.buffer.infinispan.cache.events"
               ]
@@ -546,10 +546,17 @@ to easily discover all classes that implement this interface.
 
 ### Considerations
 
-The approach of using the `Kafka Connect` classes, even if it is coupled to it, offers more flexibility in supporting components outside Debezium.
-The only real drawback is the missing support for deprecation and aliases that could help during upgrade paths. Could we consider contributing and adding support to `ConfigKey`?
+The final consideration is that we need to support both, the table below shows how component and configuration discoverability should work
 
-Then the `debezium-schema-generator` could be modified to support the new format and how to retrieve the components.
+#### Component and Configuration Discoverability
+
+| Aspect                            | Debezium                                                                 | Kafka Connect                                                                       |
+|-----------------------------------|--------------------------------------------------------------------------|-------------------------------------------------------------------------------------|
+| **Component Discoverability**     | Via the `ConnectorMetadataProvider`                                      | Via the different interfaces that expose `org.apache.kafka.common.config.ConfigDef` |
+| **Configuration Discoverability** | Via `io.debezium.config.ConfigDefinition` and `io.debezium.config.Field` | Via `org.apache.kafka.common.config.ConfigKey`                                      |
+
+Then the `debezium-schema-generator` needs to be modified to support the new format and be component agnostic.
+For the Kafka Connect components discoverability we will use all the interfaces describe before, in the first phase, while proposing a KIP to have a unified interface. 
 
 ## How to expose descriptors
 
@@ -558,38 +565,93 @@ as the information contained in the description needs to be used during the crea
 
 This requires the descriptors to be available to the platform conductor before running the Debezium server instance.
 
-The figure below shows the high-level architecture.
+### Descriptor Registry and Distribution
 
-![Debezium Platform - Descriptor service](DDD-13/platform-descriptor.png)
+The descriptors will be generated during the Debezium release process and published to a dedicated GitHub repository (`debezium-descriptors-registry`).
+This repository will contain the JSON descriptor files organized by version, providing a centralized registry for all component descriptors.
 
-In the long term, we will leverage [Image Volumes](https://kubernetes.io/docs/tasks/configure-pod-container/image-volumes/), which are moving to beta in Kubernetes 1.33. For the near future, the same can be achieved using just persistent volumes with little variation that I'll show later.
+A GitHub workflow will be configured to trigger on pushes to the main branch. This workflow will:
+1. Package the repository content (descriptor files grouped by version) into an OCI artifact
+2. Push the OCI artifact to quay.io under the Debezium organization
 
-The idea is that the `conductor` pod will have two images mounted as volumes: Debezium server and an image provided by the user with custom libs.
+This approach ensures that descriptor updates are automatically packaged and made available as immutable OCI artifacts following the same distribution model as container images.
 
-Once mounted in the `conductor` pod, the new `descriptor service`, during startup, will be in charge of reading the descriptors and exposing them through an API in the form of `json`.
+#### Repository Structure
 
-With this approach, we maintain our Debezium server distribution as immutable while giving users the possibility to extend it by providing an image.
+The `debezium-descriptors-registry` repository will be organized with the following structure:
+
+```
+debezium-descriptors-registry/
+├── 3.0.0/
+│   ├── manifest.json
+│   ├── connectors/
+│   │   ├── postgresql.json
+│   │   ├── mysql.json
+│   │   ├── mongodb.json
+│   │   ├── oracle.json
+│   │   ├── sqlserver.json
+│   │   └── ...
+│   ├── transformations/
+│   │   ├── extract-new-record-state.json
+│   │   ├── outbox-event-router.json
+│   │   └── ...
+│   └── sinks/
+│       ├── kafka.json
+│       ├── kinesis.json
+│       └── ...
+├── 3.0.1/
+│   ├── manifest.json
+│   ├── connectors/
+│   ├── transformations/
+│   └── sinks/
+├── 3.1.0/
+│   └── ...
+└── latest -> 3.1.0/
+```
+
+Each Debezium version has its own top-level directory containing:
+- A `manifest.json` file that provides metadata about the version and lists all available descriptors
+- Subdirectories organized by component type (`connectors`, `transformations`, `sinks`)
+- Individual JSON descriptor files for each component
+
+The `latest` symlink points to the most recent stable version for easy discovery.
+
+Having descriptors organized per version enables future support for pipeline versioning in the Debezium Platform. While the platform will initially use only the current stable version, this structure provides the foundation for users to create and manage pipelines with specific Debezium versions, ensuring compatibility and allowing controlled upgrades.
+
+### Mounting Descriptors in the Conductor Pod
+
+The OCI artifact containing the descriptors will be mounted on the conductor pod using [Image Volumes](https://github.com/kubernetes/enhancements/issues/4639).
+As of Kubernetes 1.35, this feature is enabled by default, though still in beta status. Image volumes allow OCI artifacts to be mounted directly as volume sources without requiring init containers or additional setup.
+
+Once mounted in the `conductor` pod, the descriptor files will be available in the filesystem. A REST API will serve these files to the frontend application,
+enabling the Debezium Platform UI to dynamically discover and present configuration options for available components.
+
+This approach maintains the Debezium descriptor distribution as immutable and version-controlled while providing a standard Kubernetes-native mechanism for making the descriptors available at runtime.
 
 ### Alternative to Image volumes
 
-Until Image Volumes become officially available, we can leverage [init containers](http://kubernetes.io/docs/concepts/workloads/pods/init-containers/).
-Both `debezium-server` and user `custom-image` will be used as init containers for the `conductor` pod.
-A persistent volume is required to copy the descriptors from init container images and then share this volume with the regular container.
+If Image Volumes cannot be used (for example, in Kubernetes versions prior to 1.35 or if the beta feature is disabled), we can leverage [init containers](http://kubernetes.io/docs/concepts/workloads/pods/init-containers/) as an alternative approach.
+
+The OCI artifact containing descriptors would be used as an init container for the `conductor` pod.
+A shared volume (emptyDir or persistent volume) would be mounted in both the init container and the main conductor container.
+The init container would copy the descriptor files from the OCI artifact to the shared volume during pod initialization.
+The main conductor container would then access these files from the shared volume and serve them via the REST API.
 
 ## Proposed changes
 
 1. Modify the `debezium-schema-generator` to generate descriptors with the new format.
 2. Modify the `debezium-schema-generator` to generate descriptors for other components (transforms, predicates, etc.).
    1. If we go for the KIP to have a common interface, until it is approved, we can just look for the different interfaces.
-3. Generate descriptors on Debezium Server distribution:
-   1. Add `debezium-schema-generator` plugin to `debezium-server-dist`
-   2. Modify the assembly to copy generated files to the distribution package
-4. Implement the descriptor service
-5. Support volumes in the Debezium Platform Helm chart
+3. Integrate descriptor generation into the Debezium release process:
+   1. Configure the build to generate descriptors during release
+   2. Automatically publish generated descriptors to the `debezium-descriptors-registry` repository, organized by version
+4. Create the `debezium-descriptors-registry` GitHub repository:
+   1. Set up the repository structure for version-organized descriptor files
+   2. Implement a GitHub workflow that builds an OCI artifact from the repository content on main branch pushes
+   3. Configure the workflow to push the OCI artifact to quay.io under the Debezium organization
+5. Implement the REST API in the conductor to serve descriptor files to the frontend application
+6. Update the Debezium Platform Helm chart:
+   1. Add support for mounting the descriptor OCI artifact as an image volume
+   2. Provide configuration options for using the init container alternative approach for Kubernetes versions prior to 1.35
 
-> **_Note:_** Point 2 can be postponed to the end so that we can go thought the whole pieces having only the connector descriptors and then add the others. 
-
-## Open points
-
-* Contribute to adding deprecation/alias support to `ConfigKey`?
-* Support for Storage? Maybe in the next phase?
+> **_Note:_** Point 2 can be postponed to the end so that we can go through the whole pieces having only the connector descriptors and then add the others.
