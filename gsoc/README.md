@@ -53,6 +53,12 @@ We will conduct a final interview with you and the mentors. The discussion will 
 
 The use of AI during GSoC is allowed but with some limitations: AI can enhance your abilities, but [it should never replace your own insight and reasoning](https://www.morling.dev/blog/hardwood-new-parser-for-apache-parquet/#_built_with_ai_not_by_ai).
 
+### Human interactions over AI
+
+GSoC is an opportunity for contributors to learn. Debezium offers contributors the chance to explore event‑driven systems, databases, and the fundamentals of system design. This is made possible through human interaction. Software is a human‑centered discipline, and without meaningful communication, we cannot learn from one another. Even AI cannot accomplish anything meaningful without human guidance and interaction.
+
+Communication between mentors and contributors must be based on content that both parties fully understand. It is prohibited to communicate with mentors using AI‑generated content without understanding its meaning. Doing so wastes the mentors’ time and, more importantly, prevents contributors from learning anything valuable.
+
 ### Documentation in the Age of AI
 
 We want to hear your opinions and ideas about Debezium and your proposal. We do not want generic AI‑generated statements. Show us your years of study but with AI as a supportive tool.
