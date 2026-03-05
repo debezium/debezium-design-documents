@@ -62,7 +62,7 @@ The default schedule for GSoC is 12 weeks, either full-time or part-time. See [t
 
 #### **Phase 1**
 
-**Community Bonding**: List any prepwork you want to do before coding starts.
+**Community Bonding**: List any paperwork you want to do before coding starts.
 
 For each coding week below, list planned code deliverables. Break the project into weeks and estimate what you will have complete at the end of each one. This schedule can be adjusted later if need be.
 
