@@ -36,7 +36,7 @@ A candidate must be able to create meaningful contributions and propose pull req
 
 ### 3. Write a Draft Proposal
 
-We ask candidates to write a draft proposal before the formal submission. Candidates must open a pull request in this repository following this process:
+We ask candidates to write a draft proposal before the formal submission. We suggest to focus on a single proposal, if we think you are a good candidate but for the same proposal we find a better fit, we can still ask you if you want to participate for another project.  Candidates must open a pull request in this repository following this process:
 
 1. Create a directory in `gsoc/2026` named with your GitHub username
 2. Create a `proposal.md` file (if multiple, name them `proposal-X.md` with incremental numbers)
