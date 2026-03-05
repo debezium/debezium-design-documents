@@ -43,7 +43,7 @@ What interests you in this GSoC project and our organization?
 
 More detailed description of your project.
 **Should** include all technical details of the projects for example:
-- excalidraw system design overview
+- Overview of system design with diagrams (we suggest [excalidraw](https://excalidraw.com/))
 - APIs and code examples to explain the Developer Experience
 - Tradeoff of your proposed solution
 - references to external documentation
