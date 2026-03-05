@@ -27,7 +27,7 @@ The first step is to introduce [yourself](https://debezium.zulipchat.com/#narrow
 
 ### 2. Code Contributions
 
-A candidate must be able to create meaningful contributions and propose pull requests. There is no defined number of pull requests required for selection, but your contributions should demonstrate:
+A candidate must be able to create meaningful contributions and propose pull requests focusing on quality over quantity. There is no defined number of pull requests required for selection, but your contributions should demonstrate:
 
 - Your ability with Java
 - Your knowledge of principles like [The Four Elements of Simple Design](https://martinfowler.com/bliki/BeckDesignRules.html)
