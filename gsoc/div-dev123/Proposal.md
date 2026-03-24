@@ -1,5 +1,7 @@
 # Debezium: Debezium CLI
 
+**Project Size**: 350 hours
+
 ## About me
 
 **Name**: Divyansh Agrawal (GitHub: [div-dev123](https://github.com/div-dev123))  
@@ -40,6 +42,8 @@ Debezium is a powerful CDC platform, but getting started with it can be complex.
 This project proposes the **Debezium CLI**, a standalone, developer-friendly tool that simplifies the process of creating, running, and monitoring CDC pipelines. The project's primary focus is to deliver a **"Local-First" experience**, enabling users to run CDC pipelines locally using Debezium’s existing runtime capabilities without requiring a Kafka cluster.
 
 As a secondary goal, the CLI will integrate with the **Debezium Management Platform** to manage distributed production pipelines, providing a consistent declarative workflow across both local and remote environments.
+
+Unlike approaches that require building and deploying container images or managing external infrastructure, this CLI focuses on a local-first execution model, allowing developers to run CDC pipelines instantly with minimal setup.
 
 ---
 
@@ -108,7 +112,7 @@ This approach allows pipelines to be version-controlled, reused, and shared easi
 
 ## 2. Architecture Overview
 
-![Architecture Overview](architecture.png)
+![Architecture Overview](arch.png)
 
 At a high level, the CLI reads the YAML configuration and decides how to execute it based on the user’s setup. 
 Depending on whether the user wants a local setup or is working with an existing deployment, it switches between two execution modes.
@@ -121,15 +125,30 @@ This is the main focus of the project and targets local development and rapid ex
 
 **How it works:**
 
-- The CLI parses the YAML configuration
-- Translates it into Quarkus-compatible configuration
-- Uses Debezium Quarkus Extensions to start an embedded CDC pipeline
+Internally, the CLI maps the parsed YAML configuration into Quarkus configuration properties (`quarkus.debezium.*`). 
+These properties are injected into the Quarkus runtime using the `ConfigProvider` before starting the embedded Debezium Engine.
+
+The execution flow for `debezium apply --local` is:
+`YAML -> Parsed Model -> Config Mapper -> Quarkus Config -> Embedded Engine Start`
 
 **Execution:**
 
 - A local runtime (based on Quarkus) is started
 - Debezium connectors (Postgres, MySQL, MongoDB, etc.) are loaded via extensions
 - CDC events are captured and routed to configured destinations (file, logs, or optional Kafka)
+
+The Debezium Engine is then executed in a managed thread, allowing the CLI to control its lifecycle (start, stop, logs).
+
+**Local Pipeline Manager:**
+
+In Local Mode, the CLI maintains a lightweight process manager to track running pipelines. Each pipeline is assigned an ID and stored in a local state file (`~/.debezium/pipelines.json`).
+
+This enables commands like:
+- `debezium pipeline stop <name>`
+- `debezium pipeline status <name>`
+- `debezium pipeline logs <name>`
+
+Internally, each pipeline runs in a separate thread or process, allowing multiple pipelines to run concurrently.
 
 **Key point:**
 This mode reuses the existing Quarkus + Debezium integration, rather than building a new execution engine.
@@ -163,11 +182,20 @@ The CLI is designed to follow simple and familiar command patterns:
 - **`debezium quickstart`**  
   Bootstraps a new CDC project with minimal setup
 
+- **`debezium init <template>`**  
+  Generates ready-made configs for common use cases (e.g., `postgres-file`, `mysql-kafka`)
+
 - **`debezium apply -f <file.yaml>`**  
   Creates or updates a pipeline declaratively
 
+- **`debezium validate <file.yaml>`**  
+  Validates pipeline configurations to catch missing fields or invalid configs early, preventing runtime failures
+
 - **`debezium pipeline start/stop <name>`**  
   Controls pipeline execution
+
+- **`debezium pipeline status <name>`**  
+  Displays pipeline state (running/stopped) and basic execution statistics
 
 - **`debezium pipeline logs <name> --follow`**  
   Streams logs (local or remote)
@@ -196,16 +224,19 @@ The CLI is designed to follow simple and familiar command patterns:
 ## 5. Technical Challenges
 
 - **Native Image Constraints**  
-  Managing reflection and dynamic loading of connectors when compiling with GraalVM
+  Since GraalVM uses closed-world analysis, dynamically loaded connectors and reflection-heavy frameworks (like Jackson and Debezium internals) require explicit configuration. Identifying and registering these classes correctly is essential to avoid runtime failures in the native binary.
 
-- **Configuration Translation**  
-  Mapping high-level YAML definitions to Quarkus and Debezium configuration properties
+- **Configuration Translation Layer**  
+  The CLI must reliably map user-friendly YAML into low-level Debezium and Quarkus configuration properties. Ensuring correctness, completeness, and compatibility across connectors is a key challenge.
 
-- **Local Resource Management**  
-  Handling issues such as port conflicts and dependency orchestration in Local Mode
+- **Local Pipeline Lifecycle Management**  
+  Running multiple CDC pipelines locally requires managing execution threads, tracking state, and ensuring proper cleanup. Handling crashes, restarts, and log streaming in a CLI environment introduces additional complexity.
 
-- **Platform Compatibility**  
-  Ensuring CLI-generated configurations align with Debezium Platform APIs
+- **Environment & Resource Conflicts**  
+  Since pipelines run locally, conflicts such as port usage, database locks, or connector misconfiguration must be detected early and handled gracefully.
+
+- **Platform API Alignment**  
+  The CLI must remain compatible with evolving Debezium Platform APIs, requiring careful abstraction and validation of request/response structures.
 
 ---
 
@@ -233,7 +264,7 @@ The CLI is designed to follow simple and familiar command patterns:
 
 ---
 
-#### **Week 1 (May 25 - May 31)**  
+#### **Week 1 (May 25 - May 31)** - 30 hours
 - Scaffold CLI using Picocli  
 - Implement base command structure (`apply`, `pipeline`, etc.)  
 - Implement YAML parsing into internal models  
@@ -243,7 +274,7 @@ CLI can parse a YAML file and print structured pipeline configuration
 
 ---
 
-#### **Week 2 (June 1 - June 7)**  
+#### **Week 2 (June 1 - June 7)** - 30 hours
 - Integrate Debezium via Quarkus extensions  
 - Build configuration translator (YAML → Quarkus config)  
 - Prototype basic pipeline execution  
@@ -253,7 +284,7 @@ CLI can generate valid Quarkus configuration for a pipeline
 
 ---
 
-#### **Week 3 (June 8 - June 14)**  
+#### **Week 3 (June 8 - June 14)** - 30 hours
 - Implement `debezium apply --local` for PostgreSQL  
 - Start embedded Debezium Engine via Quarkus  
 - Validate CDC event capture  
@@ -263,7 +294,7 @@ Working local CDC pipeline (Postgres → logs/file)
 
 ---
 
-#### **Week 4 (June 15 - June 21)**  
+#### **Week 4 (June 15 - June 21)** - 30 hours
 - Extend Local Mode to MySQL and MongoDB  
 - Add lifecycle commands:  
   - `pipeline stop`  
@@ -274,7 +305,7 @@ Multiple connectors supported with basic lifecycle control
 
 ---
 
-#### **Week 5 (June 22 - June 28)**  
+#### **Week 5 (June 22 - June 28)** - 25 hours
 - Improve reliability (error handling, config validation)  
 - Handle common issues (port conflicts, invalid configs)  
 - Generate GraalVM native binary  
@@ -284,7 +315,7 @@ Stable CLI with native executable and improved UX
 
 ---
 
-#### **Week 6 (June 29 - July 5)**  
+#### **Week 6 (June 29 - July 5)** - 25 hours
 - Implement REST client for Debezium Platform APIs  
 - Add support for `connection test` via platform  
 
@@ -304,7 +335,7 @@ CLI can communicate with Debezium Platform and validate connections
 
 ### **Phase 2: Remote Mode and UX Improvements**
 
-#### **Week 7 (July 6 - July 12)**  
+#### **Week 7 (July 6 - July 12)** - 30 hours
 - Implement `debezium apply --platform <url>`  
 - Support creation of core resources (Connection, Source, Destination, Pipeline)  
 
@@ -313,17 +344,17 @@ CLI can deploy pipelines to Debezium Platform
 
 ---
 
-#### **Week 8 (July 13 - July 19)**  
+#### **Week 8 (July 13 - July 19)** - 30 hours
 - Add pipeline management features:  
-  - status  
-  - stop  
+  - **`debezium pipeline status`**: View pipeline state and basic runtime information
+  - **`debezium pipeline stop`**
 
 **Outcome**:  
-Basic remote pipeline lifecycle management  
+Basic remote pipeline lifecycle management and status monitoring  
 
 ---
 
-#### **Week 9 (July 20 - July 26)**  
+#### **Week 9 (July 20 - July 26)** - 30 hours
 - Implement log streaming (basic version)  
 - Improve CLI output formatting  
 
@@ -332,7 +363,7 @@ Users can monitor pipelines via CLI
 
 ---
 
-#### **Week 10 (July 27 - August 2)**  
+#### **Week 10 (July 27 - August 2)** - 30 hours
 - Add config validation using platform catalog  
 - Improve error messages  
 
@@ -341,7 +372,7 @@ Better validation and user feedback
 
 ---
 
-#### **Week 11 (August 3 - August 9)**  
+#### **Week 11 (August 3 - August 9)** - 30 hours
 - Testing (unit + integration with Testcontainers)  
 - Documentation and usage examples  
 - Bug fixes and polish  
@@ -351,7 +382,7 @@ Production-ready CLI with documentation
 
 ---
 
-#### **Final Week (August 10 - August 16)**  
+#### **Final Week (August 10 - August 16)** - 30 hours
 - Final improvements and cleanup  
 - Submission and documentation completion  
 
@@ -365,15 +396,26 @@ Production-ready CLI with documentation
 2. **WebSocket Log Streaming**  
    - Real-time logs from remote platform  
 
-3. **CLI Distribution and Packaging**
-   - Provide easy installation methods for end users
-   - Package the CLI as a native binary for macOS, Linux, and Windows
-   - Support installation via common package managers 
+3. **CLI Distribution and Packaging**  
+   - Native binaries for macOS, Linux, and Windows  
+   - Installation via package managers (e.g., Homebrew)  
+
+4. **Dry Run Mode**  
+   - Preview pipeline execution without running it via `debezium apply --dry-run` 
+   - Display resolved configuration and execution plan  
+
+5. **Pipeline Templates**  
+   - Predefined templates for common CDC use cases  
+   - Provide a quick bootstrap path with `debezium init`
 ---
 
 ## Other commitments
 
-*Yet to Add*
+I have my university end semester exams till 8th May so I will be able to actively start working from 9th May. To make up for missing a part of community bonding period I will give extra hours for the rest of the bonding time.
+
+Other than that, GSOC squarely falls during my summer break and as such I do not have any other commitments that would interfere with my work on this project. Aside from a day or two off biweekly for personal reasons I will be fully available and responsive during the GSOC period.
+
+During my break I can easily give upto 35-40 hours a week to the project. My university begins from mid July and hence after that the time per week might reduce to 20-25 hours. Therefor I will make sure most of my work is finished before the planned schedule to make up for the reduced hours.
 
 ## Appendix
 
