@@ -51,6 +51,12 @@ What drew me to this project is that it is not a feature addition — it is a ne
 
 From a developer experience perspective, I believe the biggest friction point in Debezium today is **setup** — figuring out which JARs to include, how to wire connectors together, and how to get a server running. A CLI that solves that in a single command is the highest-value DX win. Giovanni agreed with this reasoning and encouraged me to defend it in my proposal.
 
+From my own perspective, the value of the Debezium CLI comes down to three things: **speed**, **control**, and **confidence**.
+
+Today, a developer who wants to run a CDC pipeline has to manually hunt for the right JARs, write configuration by hand, and rely on a UI to deploy and observe what is happening. There is no fast path. The CLI changes that — `dbz init` gives you a working config in seconds, `dbz build` assembles exactly the right dependencies without requiring Maven or Docker, and `dbz pipeline logs --stream` brings observability directly into the terminal where developers already work.
+
+The deeper value is **ownership** — a developer using the CLI can version-control their entire CDC setup, reproduce it anywhere, and wire it into CI/CD pipelines. That is something a UI can never offer. For teams that treat infrastructure as code, the CLI makes Debezium a first-class citizen in that workflow.
+
 ---
 
 ### Technical Description
@@ -466,6 +472,7 @@ The CLI will have a three-layer test suite:
   - Set up the `debezium-cli` module scaffold in the monorepo
   - Configure CI/CD (GitHub Actions: build, test, native binary)
   - Submit a small bugfix/good-first-issue PR to establish familiarity with the codebase
+  - **Deliverable:** A short demo walkthrough showing the project scaffold running, CI/CD pipeline passing, and a recorded explanation of why each setup decision was made — confirming the architectural foundation is agreed upon with mentors before coding begins
 
 - **Week 1 — Project Scaffold + Core Infrastructure (~25h)**
   - Create `debezium-cli` Maven module with Quarkus + Picocli dependencies
@@ -593,9 +600,7 @@ The CLI will have a three-layer test suite:
 
 ## Other Commitments
 
-[Describe your exam schedule, part-time work, or travel here. Be specific with dates. Example:]
-
-I have university exams in [Month YYYY]. During that period I plan to work approximately 20 hours/week for [X] weeks and compensate with extra hours before and after. My mentors will be informed of these specific dates in advance.
+I have no academic exams, internships or other priorities that will conflict with the GSoC coding period. I can commit 30-40 hours per week for the full duration of the program. I will communicate with mentors daily via GitHub discussions or Zulip channels and provide a weekly progress report. If any conflicts come up then my mentors will be informed of these specific dates in advance.
 
 ---
 
