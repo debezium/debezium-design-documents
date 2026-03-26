@@ -37,13 +37,13 @@ I have been actively contributing to Debezium to better understand the codebase,
 
 ### Abstract
 
-Debezium is a powerful CDC platform, but getting started with it can be complex. Users often need to manually configure Kafka, connectors, and multiple services before they can see their first change event. 
+Debezium is a powerful CDC platform, but getting started with it can be complex. Users often need to manually configure Kafka, connectors, and multiple services before they can see their first change event. This makes the initial setup time-consuming and sometimes difficult to debug, especially for new users.
 
-This project proposes the **Debezium CLI**, a standalone, developer-friendly tool that simplifies the process of creating, running, and monitoring CDC pipelines. The project's primary focus is to deliver a **"Local-First" experience**, enabling users to run CDC pipelines locally using Debezium’s existing runtime capabilities without requiring a Kafka cluster.
+This project proposes the **Debezium CLI**, a standalone, developer-friendly tool that simplifies the process of creating, running, and monitoring CDC pipelines. The CLI focuses on reducing setup complexity, improving visibility of CDC events, and enabling a much faster “first success” experience.
 
-As a secondary goal, the CLI will integrate with the **Debezium Management Platform** to manage distributed production pipelines, providing a consistent declarative workflow across both local and remote environments.
+The project's primary focus is to deliver a "Local-First" experience, enabling users to run CDC pipelines locally using Debezium’s existing runtime capabilities without requiring a Kafka cluster or external infrastructure. This allows developers to experiment, debug, and understand CDC workflows in a much simpler and more controlled environment.
 
-Unlike approaches that require building and deploying container images or managing external infrastructure, this CLI focuses on a local-first execution model, allowing developers to run CDC pipelines instantly with minimal setup.
+As a secondary goal, the CLI will integrate with the Debezium Management Platform to manage distributed production pipelines, providing a consistent declarative workflow across both local and remote environments.
 
 ---
 
@@ -51,9 +51,20 @@ Unlike approaches that require building and deploying container images or managi
 
 While exploring Debezium, I realized that even simple CDC use cases require significant setup (Kafka, connectors, and multiple services). During my experiments with JBang templates, I also faced practical issues such as port conflicts and having to manually orchestrate different tools.
 
-These experiences made me feel that there is room for a simpler interface - something similar to tools like Docker or Git, where a few commands are enough to get started.
+When I first tried the MySQL to Kafka tutorial locally, although the documentation was clear, the process itself was quite tedious. It took me more than an hour to get everything running, including pulling multiple Docker images. I also didn’t fully understand many of the commands I was executing, which made debugging difficult. Even after the pipeline was running, observing the CDC events was not very intuitive, as the output was not easily visible.
 
-I am particularly interested in improving **Developer Experience (DX)** and building tools that reduce complexity for developers. While I am still building deeper experience in Java frameworks like Quarkus and technologies like GraalVM, I have a strong foundation in programming and have been actively contributing to Debezium to understand its internals.
+As someone interested in contributing, I was willing to push through this, but I feel that a normal user would find this frustrating unless they already have experience with tools like Kafka and Docker.
+
+This is where I see the value of the CLI:
+
+- It reduces setup complexity by avoiding the need to manually configure multiple services for basic use cases
+- It speeds up the “first success” experience by allowing users to define and run a pipeline with minimal commands
+- It makes local experimentation easier by removing the dependency on external infrastructure
+- It improves visibility by providing simple ways to view logs and CDC events directly from the CLI
+
+These improvements make Debezium more approachable for new users, while still being useful for advanced users who want a faster and more scriptable workflow.
+
+I am particularly interested in improving Developer Experience (DX) and building tools that reduce complexity for developers. While I am still building deeper experience in Java frameworks like Quarkus and technologies like GraalVM, I have a strong foundation in programming and have been actively contributing to Debezium to understand its internals.
 
 This project is an opportunity for me to both contribute meaningfully to an open-source ecosystem and deepen my understanding of systems like CDC pipelines, distributed data flow, and developer tooling.
 
@@ -407,6 +418,10 @@ Production-ready CLI with documentation
 5. **Pipeline Templates**  
    - Predefined templates for common CDC use cases  
    - Provide a quick bootstrap path with `debezium init`
+
+6. **Minimal Runtime Distribution (Based on `debezium-server-dist-builder`)**  
+   - Research and implement a mechanism to package only the required source and sink connectors.  
+   - Reduce the memory footprint and distribution size by avoiding a "complete" build of all possible connectors.
 ---
 
 ## Other commitments
