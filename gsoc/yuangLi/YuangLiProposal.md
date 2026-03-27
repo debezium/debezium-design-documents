@@ -1,7 +1,11 @@
 
-# JBoss Community  / Debezium: Milvus Source Connector for Debezium
+# Debezium: Milvus Source Connector for Debezium
 
-Note: Make sure to include the sub-org name in the title both in Google's system and in your document.
+  **Sub-org:** Debezium  
+  **Organization:** JBoss Community by RedHat  
+  **Program:** Google Summer of Code 2026  
+  **Skill level:** Intermediate  
+  **Expected Size:** 350 hours
 
 ## About Me
 
@@ -20,6 +24,7 @@ Note: Make sure to include the sub-org name in the title both in Google's system
   - [add Infinispan connection validator](https://github.com/debezium/debezium-platform/pull/288)
   - [Start & Stop API for the Quarkus Runtime Extension](https://github.com/debezium/debezium-quarkus/pull/33)
 
+---
 
 ## Project Information
 
@@ -31,6 +36,8 @@ This project proposes a Debezium source connector for Milvus 2.5, covering initi
 
 Milvus 2.5 is selected because its Kafka/Pulsar-based architecture is comparatively stable and well understood. Milvus 2.6 introduces Woodpecker and a new StreamingService layer, which significantly changes the consumption model and still appears to be evolving, so support for 2.6 is deferred as future work.
 
+With a Milvus connector, changes in vector data can be captured and consumed in real time, allowing teams to trigger downstream workflows, keep dependent systems updated, and integrate Milvus more cleanly into existing data platforms. This is particularly useful in systems such as RAG, semantic retrieval, and recommendation pipelines, where keeping vector data fresh and synchronized is important.
+
 ## Why this project?
 
 During a previous internship I worked with Kafka-based data pipelines, which led me to CDC and how it keeps distributed systems consistent. A big part of that was reading Jay Kreps [The Log](https://engineering.linkedin.com/distributed-systems/log-what-every-software-engineer-should-know-about-real-time-datas-unifying), the idea that an append-only log is the unifying abstraction behind databases, replication, and stream processing changed how I think about distributed systems.
@@ -38,6 +45,7 @@ During a previous internship I worked with Kafka-based data pipelines, which led
 
 What I liked most was that building this connector is essentially putting theories that I learned into practice, using Milvus's internal WAL and message queue as the source of truth, and building a reliable change stream on top of it. Figuring out why etcd and the message queue need to work together, finding the timetick mechanism for DDL/DML ordering, tracing how milvus-cdc uses etcd checkpoints as MQ seek positions. These were problems I enjoyed digging into, and they felt like a direct application of the ideas that got me interested in this space in the first place.
 
+---
 
 ## Technical Description
 ### Scope
@@ -80,6 +88,49 @@ when a query is issued with a guarantee_ts,the QueryNode blocks until all writes
 
 ---
 
+#### Schema Design: DatabaseSchema<CollectionId> vs RelationalDatabaseSchema
+
+##### Background
+
+Milvus has no JDBC layer, no `java.sql.Types` mapping, and no `ALTER TABLE`-style DDL. Collection schemas are recovered directly from etcd at startup, and `CreateCollectionRequest` messages in the MQ carry the full `CollectionSchema` inline. 
+
+This creates a design choice: should `MilvusSchema` implement `DatabaseSchema<CollectionId>` directly, similar to `MongoDbSchema`, or extend `RelationalDatabaseSchema`, similar to MySQL/PostgreSQL connectors?
+
+##### Option A: extends RelationalDatabaseSchema
+**Pros**
+- **More reuse:** Reuses Debezium’s existing schema infrastructure, including registry, filtering, topic naming, and `TableSchemaBuilder`.
+- **Clearer conversion path:** Fits naturally with a `MilvusValueConverter implements ValueConverterProvider`, using the same `typeName()` based dispatch pattern already used in other connectors.(same pattern used in BinlogValueConverters and PostgreSQL's type registry, without requiring jdbcType() mappings)
+- **Manageable adaptation:** Mapping `CollectionId` to `TableId(catalog=dbName, schema=null, table=collectionName)` is not ideal, but it is consistent with existing Debezium patterns.(MySQL/MariaDB leaves schema empty, PostgreSQL leaves catalog empty. )
+  
+**Cons**
+- **Less native fit:** Requires an internal `CollectionId -> TableId` translation layer and exposes relational-style identifiers in topic names and logs.
+- **Heavier config model:** Requires `MilvusConnectorConfig` to extend `RelationalDatabaseConnectorConfig`, bringing in JDBC-oriented behavior that must be overridden or excluded.
+
+
+##### Option B: implements DatabaseSchema<CollectionId>
+**Pros**
+- **Native fit:** Keeps `CollectionId` as the native identifier throughout the schema layer, without translating to `TableId`, and stays closer to Milvus’s native data model.
+- **Simpler pattern:** Has a clear reference in `MongoDbSchema`, with a straightforward structure centered on `schemaFor()` and a `ConcurrentHashMap<CollectionId, DataCollectionSchema>`.
+- **Lighter config model:** Allows `MilvusConnectorConfig` to extend `CommonConnectorConfig` directly, without inheriting relational/JDBC-oriented configuration.
+  
+**Cons**
+- **Less reuse:** Schema registry, filtering, topic naming, and related schema infrastructure must be implemented manually.
+- **Weaker conversion path:** `TableSchemaBuilder` is not directly reusable, and the design does not provide an equally clear place for mapping Milvus types to Kafka Connect schemas.
+
+##### Decision
+
+The connector will start with **Option A**. 
+
+Because Debezium is designed to handle high-volume CDC workloads, reliability and ease of debugging matter a lot. Reusing framework components that are already established in Debezium should help make the connector more reliable, and a clearer schema/conversion path should make the implementation easier to debug. 
+
+Also, since Debezium is an open-source project, it is important that other contributors can understand the structure quickly and contribute without too much overhead. Reuse and a clear path both help reduce that cost.
+
+The connector should fall back to Option B, if the `CollectionId -> TableId` translation becomes complex and makes the code harder to debug or making the logic harder for others to follow during the implementation.
+
+> Related framework integration issues will be prototyped during Community Bonding before coding begins.
+> `CollectionId → TableId` is an internal translation layer only， Milvus is not being modeled as a relational system. The goal is to reuse Debezium's existing event and schema pipeline.
+---
+
 ### Key Components
 
 ##### Component 1: EtcdMetadataReader
@@ -109,31 +160,88 @@ The channel checkpoint stored in etcd is a Protobuf-encoded MQ seek position con
 ---
 ##### Component 2: MilvusSchema
 Responsibility:
-- Implements Debezium's `DatabaseSchema<CollectionId>` interface to maintain the current Debezium schema state for all monitored collections.
-- Converts Milvus `CollectionSchema` (Protobuf format) into Debezium `Schema` (Kafka Connect format) internally.
+- Extends `RelationalDatabaseSchema`  to maintain the current Debezium schema state for all monitored collections.
+- Converts Milvus `CollectionSchema` (Protobuf format) into Debezium `Schema` (Kafka Connect format) via `MilvusValueConverter`.
 - Serves as the single source of truth for collection schemas, injected into `EventDispatcher` at construction time.
 ```java
-public class MilvusSchema implements DatabaseSchema<CollectionId> {
+public class MilvusSchema extends RelationalDatabaseSchema {
 
-    public MilvusSchema(MilvusConnectorConfig config);
+    public MilvusSchema(MilvusConnectorConfig config,
+                        TopicNamingStrategy topicNamingStrategy,
+                        MilvusValueConverter valueConverter,
+                        TableFilter tableFilter,
+                        boolean tableIdCaseInsensitive);
 
-    /** Called by EventDispatcher when building INSERT/DELETE change events */
-    @Override
-    public DataCollectionSchema schemaFor(CollectionId collectionId);
-
-    /** Builds and registers the Debezium schema for a collection from its Milvus CollectionSchema definition */
-    public void applySchemaChange(CollectionId collectionId, CollectionSchema milvusSchema);
+    /** Called by snapshot and streaming sources; converts CollectionId to TableId internally */
+    public void applySchemaChange(
+            CollectionId collectionId,
+            CollectionSchema milvusSchema,
+            MilvusOffsetContext offsetContext,
+            EventDispatcher<TableId> dispatcher
+    ) throws InterruptedException;
 
     /** Removes the schema entry for a dropped collection */
     public void removeSchema(CollectionId collectionId);
+
+    /** Internal mapping: CollectionId → TableId(catalog=dbName, schema=null, table=collectionName) */
+    private TableId toTableId(CollectionId collectionId);
+}
+
+public class MilvusValueConverter implements ValueConverterProvider {
+    @Override public SchemaBuilder schemaBuilder(Column column);
+    @Override public ValueConverter converter(Column column, Field fieldDefn);
 }
 ```
 **Implementation notes:**
-
-This conversion is used both at startup, when schema metadata is loaded from etcd, and during streaming, when a `CreateCollectionEvent` updates the in-memory schema state. Schema change events are emitted before subsequent DML events for that collection are processed.
-
+- External methods accept `CollectionId` and convert to `TableId` internally via `toTableId()`.so `CollectionId` remains the only ID type visible to the rest of the connector.
+- `MilvusValueConverter` dispatches on `column.typeName()`, vector dimension and array element type are encoded in c`olumn.typeExpression()` and parsed at conversion time.
+- `applySchemaChange()` accepts `EventDispatcher<TableId>` to support future schema change event emission for downstream consumers; 
+- Schema change events are emitted before subsequent DML events for that collection are processed.
+See [Appendix B](#appendix-b-component-2-detail) for FieldSchema to Column mapping and type map.
 ---
-##### Component 3: MilvusMessageConsumer (abstract interface)
+##### Component 3: MilvusConnectorConfig
+Responsibility:
+- Extends `RelationalDatabaseConnectorConfig` to declare and validate all user-facing configuration properties.
+- Wires in `MilvusSourceInfoStructMaker` and validates MQ-type/endpoint consistency at startup.
+
+Properties span four groups: Connection, MQ, Filters, and Snapshot. See [Appendix C](#appendix-c-milvusconnectorconfig-properties)for the full property table.
+```java
+public class MilvusConnectorConfig extends RelationalDatabaseConnectorConfig {
+
+    public static final Field SOURCE_INFO_STRUCT_MAKER = CommonConnectorConfig.SOURCE_INFO_STRUCT_MAKER
+            .withDefault(MilvusSourceInfoStructMaker.class.getName());
+
+    private static final ConfigDefinition CONFIG_DEFINITION = RelationalDatabaseConnectorConfig.CONFIG_DEFINITION.edit()
+            .name("Milvus")
+            .type(ETCD_ENDPOINTS, MILVUS_URI, TOKEN, MQ_TYPE)
+            .connector(SNAPSHOT_MODE)
+            .events(SOURCE_INFO_STRUCT_MAKER)
+            .create();
+
+    public static Field.Set ALL_FIELDS = Field.setOf(CONFIG_DEFINITION.all());
+
+    @Override
+    protected SourceInfoStructMaker<? extends AbstractSourceInfo>
+            getSourceInfoStructMaker(Version version) {
+        return getSourceInfoStructMaker(SOURCE_INFO_STRUCT_MAKER,
+                MilvusModule.name(), MilvusModule.version(), this);
+    }
+
+    // Validates that mq.type and its corresponding endpoint are both present
+    private static int validateMqConfig(Configuration config,
+                                         Field field,
+                                         ValidationOutput problems) { ... }
+
+    // Uses Milvus SDK health check instead of JDBC
+    @Override
+    protected boolean validateConnection(...) { ... }
+}
+```
+
+**Implementation notes:**
+`MilvusModule` is a small helper providing `name()`, `version()`, and `contextName()`, following the pattern of `io.debezium.connector.mysql.Module`.
+---
+##### Component 4: MilvusMessageConsumer (abstract interface)
 Responsibility:
 - Abstracts the difference between Kafka and Pulsar,
 - WAL(version 2.6) in the future
@@ -158,7 +266,7 @@ Kafka and pulsar share the same message body format: `milvus-proto Protobuf`:
 - The Kafka implementation uses `kafka-clients` with offset as `topic` + `partition` + `long`.
 - The Pulsar implementation uses `pulsar-client` with offset as `MessageId` (`ledgerId` + `entryId`)
 ---
-##### Component 4: MilvusProtoDeserializer
+##### Component 5: MilvusProtoDeserializer
 Responsibility:
 - Parses raw MQ payloads into structured Milvus change events.
 - Converts `column-oriented` INSERT payloads into `row-oriented` records for Debezium event emission.
@@ -185,13 +293,16 @@ public sealed interface MilvusChangeEvent {
 }
 ```
 
+- `DeleteEvent` retains `List<Object> primaryKeys` at the deserializer level.
+-  `MilvusStreamingChangeEventSource` is responsible for iterating over the list and dispatching one delete `ChangeEvent` per primary key, consistent with other Debezium connectors.
+
 ## References
 
 - Milvus `InsertRequest` definition in `msg.proto`: [msg.proto](https://github.com/milvus-io/milvus-proto/blob/master/proto/msg.proto)
 - Milvus `FieldData` definition in `schema.proto`: [schema.proto](https://github.com/milvus-io/milvus-proto/blob/master/proto/schema.proto)
 - Milvus internal column-to-row conversion: [utils.go](https://github.com/milvus-io/milvus/blob/master/internal/storage/utils.go#L540-L582)
 ---
-##### Component 5:MilvusChangeEventSourceFactory
+##### Component 6:MilvusChangeEventSourceFactory
 Responsibility:
 -   Implements Debezium's `ChangeEventSourceFactory`, called by `ChangeEventSourceCoordinator` at startup to construct the snapshot and streaming sources.
 
@@ -227,7 +338,7 @@ public class MilvusChangeEventSourceFactory
 - `getIncrementalSnapshotChangeEventSource` — returns `Optional.empty()` for now.
 -  Incremental snapshot is deferred because it requires a signaling mechanism and a chunking strategy compatible with Milvus's query API. The current abstraction in MilvusSnapshotChangeEventSource is designed to be reusable for this purpose once the core pipeline is stable.
 ---
-##### Component 6:MilvusSnapshotChangeEventSource
+##### Component 7:MilvusSnapshotChangeEventSource
 Responsibility:
 - Extends `AbstractSnapshotChangeEventSource` to perform the initial bulk read of existing collection data.
 - Implements the **snapshot-to-streaming handoff** by reading the etcd channel checkpoint before snapshot execution.
@@ -249,11 +360,11 @@ public class MilvusSnapshotChangeEventSource
 ```
 
 ---
-##### Component 7: MilvusStreamingChangeEventSource
+##### Component 8: MilvusStreamingChangeEventSource
 Responsibility:
 - Implements `StreamingChangeEventSource` to consume the message queue from the offset recorded at the end of the snapshot.
 - Handles DML, DDL, and timetick messages emitted through Milvus MQ.
-- Uses timetick watermarks to order and flush buffered schema changes and data changes before they are emitted through Debezium’s event pipeline.
+- - Buffers events in arrival order. on each `TimeTickEvent(tso)`, flushes all buffered events with `timestamp ≤ tso`. DDL events update the schema before any subsequent DML for that collection is dispatched.
 - Supports restart recovery by resuming consumption from the stored MQ position.
 ```java
 public class MilvusStreamingChangeEventSource
@@ -267,7 +378,81 @@ public class MilvusStreamingChangeEventSource
   ) throws InterruptedException;
 }
 ```
+---
+##### Component 9: MilvusOffsetContext
+Responsibility:
+- Tracks connector position per pchannel and stores vchannel-level state (`tso`, `snapshot_completed`) for dedup and restart recovery.
+- Serializes/deserializes offset map for Kafka Connect offset storage.
 
+```java
+public class MilvusOffsetContext extends CommonOffsetContext<MilvusSourceInfo> {
+
+    /** Serializes current state into a primitive Map for Connect offset storage */
+    @Override
+    public Map<String, ?> getOffset() { ... }
+
+    /** Restores a MilvusOffsetContext from a previously persisted offset map */
+    public static class Loader implements OffsetContext.Loader<MilvusOffsetContext> {
+        @Override
+        public MilvusOffsetContext load(Map<String, ?> offset) { ... }
+    }
+}
+
+public class MilvusPartition implements Partition {
+    private final String pchannel;
+
+    @Override
+    public Map<String, String> getSourcePartition() {
+        return Map.of("pchannel", pchannel);
+    }
+}
+```
+**Implementation notes:**
+- Partition key is `pchannel` rather than `vchannel`, because one `pchannel` maps to multiple `vchannels`, using vchannel as the key would require loading N offsets on restart.
+- vchannel states are nested as a JSON map within the pchannel offset entry. See [Appendix D](#appendix-d-milvusoffsetcontext-offset-structure) for full offset structure and restart recovery logic.
+- on restart, all vchannels under a pchannel resume from the same MQ position and may reprocess some events; duplicates are filtered by comparing `tso` against the stored value before dispatch.
+---
+##### Component 10: MilvusSourceInfoStructMaker
+Responsibility:
+- Populates the `source` block in every Debezium change event.
+- Called by `EventDispatcher` when building each change event.
+- Extends `CommonSourceInfoStructMaker` to include Milvus-specific metadata.
+
+Fields are grouped into three categories:
+
+| Category | Fields | Purpose |
+|---|---|---|
+| Source identity | `collection`, `partition`, `vchannel` | Routing, filtering, shard-level debugging |
+| Position / ordering | `tso`, `segment_id` | Event ordering, latency monitoring, replay tracing |
+| Event metadata | `collection_id`, `partition_id`, `msg_id` | Distinguish drop/recreate by ID, dedup and debugging in at-least-once scenarios |
+
+`tso` upper 46 bits encode physical milliseconds; `timestamp()` derives wall-clock time from it.
+```java
+public class MilvusSourceInfoStructMaker extends CommonSourceInfoStructMaker {
+
+    @Override
+    public void init(String connector, String version, CommonConnectorConfig config) {
+        super.init(connector, version, config);
+        // schema: commonStruct fields + collection, collection_id,
+        //         partition (optional), partition_id (optional),
+        //         vchannel, tso, segment_id (optional), msg_id (optional)
+    }
+
+    @Override
+    public Struct struct(MilvusSourceInfo sourceInfo) { ... }
+}
+
+public class MilvusSourceInfo extends BaseSourceInfo {
+
+    @Override
+    protected Instant timestamp() {
+        return tso == 0 ? null : Instant.ofEpochMilli(tso >> 18);
+    }
+
+    @Override
+    protected String database() { return collectionName; }
+}
+```
 ---
 
 ##### Testing Strategy
@@ -281,13 +466,14 @@ public class MilvusStreamingChangeEventSource
 
 #### Community Bonding (May 1 – May 24)
 
-- Confirm technical direction with mentors (etcd bootstrap, MQ consumption, timetick ordering)
+- Prototype `CollectionId → TableId` mapping and validate [Schema Design](#schema-design-databaseschemacollectionid-vs-relationaldatabaseschema) coverage across key cases
 - Set up local development and test environment
+- Confirm technical direction with mentors (etcd bootstrap, MQ consumption, timetick ordering)
 - Review `milvus-proto` message definitions and validate assumptions around TSO encoding and Strong consistency
 - Prepare detailed implementation and testing plan and share with mentors
 
 **Deliverables:**
-- Agreed technical plan with mentors
+- Agreed detailed technical plan with mentors
 - Dev environment ready
 - Detailed plan shared with mentors
 
@@ -299,9 +485,10 @@ public class MilvusStreamingChangeEventSource
 |------|-----------|--------------|
 | Week 1 (May 25–31) | - Create `debezium-connector-milvus` module skeleton <br>- Set up CI, Checkstyle, and project structure <br>- Implement `EtcdMetadataReader` for schema, vchannel, and checkpoint bootstrap | - Module builds successfully <br>- etcd bootstrap works in integration test |
 | Week 2 (Jun 1–7) | - Integrate `milvus-proto` codegen into the build <br>- Implement `MilvusProtoDeserializer` for DML, DDL, and timetick message types <br>- Add column-to-row transformation for INSERT payloads | - Deserializer covers all message types <br>- Unit tests pass for message parsing and row reconstruction |
-| Week 3 (Jun 8–14) | - Implement `MilvusSchema` for in-memory schema tracking and Milvus-to-Debezium type conversion <br>- Define `MilvusMessageConsumer` abstraction <br>- Implement `KafkaMilvusMessageConsumer` <br>- Add offset serialization in `MilvusOffsetContext` | - Schema conversion works for all supported field types <br>- Kafka MQ consumption works in integration test <br>- Offset round-trip validated |
-| Week 4 (Jun 15–21) | - Implement `MilvusSnapshotChangeEventSource` <br>- Complete snapshot-to-streaming handoff using etcd checkpoint and `guarantee_ts` <br>- Emit snapshot events through Debezium's event pipeline | - Snapshot works against live Milvus <br>- Streaming start position recorded correctly |
-| Week 5 (Jun 22–28) | - Implement `MilvusStreamingChangeEventSource` <br>- Add `MilvusChangeEventSourceFactory` <br>- Wire connector into Debezium's source pipeline end to end | - First end-to-end prototype working <br>- Milvus change → Debezium event flow validated |
+| Week 3 (Jun 8–14) | - Implement `MilvusSchema` for in-memory schema tracking and Milvus-to-Debezium type conversion <br>- Implement `MilvusConnectorConfig`: define all user-facing properties, wire in `MilvusSourceInfoStructMaker`, add MQ-type validation <br>- Define `MilvusMessageConsumer` abstraction <br>- Implement `KafkaMilvusMessageConsumer` <br>- Add offset serialization in `MilvusOffsetContext` | - Schema conversion works for all supported field types <br>- `MilvusConnectorConfig` builds and passes startup validation <br>- Kafka MQ consumption works in integration test <br>- Offset round-trip validated |
+| Week 4 (Jun 15–21) | - Implement snapshot-to-streaming handoff: read etcd checkpoint, extract `guarantee_ts`, record MQ start position in `MilvusOffsetContext` <br>- Implement `MilvusSourceInfoStructMaker` and `MilvusSourceInfo`: populate source block fields for all event types <br>- Implement `MilvusStreamingChangeEventSource` (DML + timetick handling) <br>- Add `MilvusChangeEventSourceFactory` | - Handoff anchor recorded correctly <br>- Source block fields verified in emitted events <br>- Streaming consumes live MQ events end to end |
+| Week 5 (Jun 22–28) | - Wire full connector pipeline end to end <br>- Validate restart recovery from stored MQ position <br>- Add basic retry and error-handling logic for MQ and SDK interactions | - First end-to-end prototype working <br>- Restart recovery validated in integration test |
+
 
 ---
 
@@ -309,8 +496,8 @@ public class MilvusStreamingChangeEventSource
 
 | Week | Key Tasks | Deliverables |
 |------|-----------|--------------|
-| Week 6 (Jun 29 – Jul 5) | - Improve restart and recovery behavior <br>- Add DELETE handling and verify DDL/DML ordering through timetick <br>- Add basic retry and error-handling logic for MQ and SDK interactions | - Restart recovery validated <br>- Ordered schema and data events validated <br>- Core failure-handling path implemented |
-| Week 7 (Jul 6–12) | - Test snapshot boundary cases (restart mid-snapshot, empty collections) <br>- Validate handoff correctness under edge cases <br>- Finalize error handling for timetick stall and MQ offset expiry | - Snapshot boundary and restart scenarios covered by integration tests <br>- Timetick stall and offset expiry error handling complete |
+| Week 6 (Jun 29 – Jul 5) | - Add DELETE handling and verify DDL/DML ordering through timetick <br>- Test edge cases <br>- Expand integration test coverage for streaming correctness | - Ordered schema and data events validated <br>- Edge case handling complete |
+| Week 7 (Jul 6–12) | - Implement `MilvusSnapshotChangeEventSource`  <br>- Test snapshot boundary cases | - Snapshot boundary and restart scenarios covered by integration tests <br>-  Snapshot bulk read works against live Milvus |
 | **Week 8 (Jul 13–19)** | **Buffer** — address review feedback and outstanding issues from Phase 1–2; prepare and submit midterm report | - Midterm report submitted <br>- Core pipeline stable and review-ready |
 
 ---
@@ -352,13 +539,79 @@ public class MilvusStreamingChangeEventSource
 I do not expect any major external commitments during the GSoC coding period beyond my regular coursework. I will prioritize this project accordingly and will communicate early if any scheduling conflicts arise.
 
 ## Appendix
+---
+### Appendix A: edge cases
 
-The following edge cases are handled within `MilvusStreamingChangeEventSource` (see Component 7) and `MilvusSnapshotChangeEventSource` (see Component 6):
+The following edge cases are handled within `MilvusStreamingChangeEventSource` (see Component 8) and `MilvusSnapshotChangeEventSource` (see Component 7):
 
-- **Drop collection with buffered DML** (Case 5): If a `DropCollectionMsg` is received while DML events for that collection are still buffered, all buffered DML events are discarded, `MilvusSchema.removeSchema()` is called, and a drop schema change event is emitted. 
+- **Drop collection with buffered DML** (Case 5): Buffered DML events are emitted before the drop is processed. Events are discarded only if the schema is already unavailable. `MilvusSchema.removeSchema() `and the drop schema change event are emitted after all buffered DML has been dispatched.
 
-- **Timetick interruption** (Case 6): If no `TimeTickMsg` is received within a configurable timeout, buffered events are force-flushed. If the stall persists beyond a second threshold, the connector stops and waits for manual intervention.
+- **Timetick interruption** (Case 6): If no `TimeTickMsg` is received within a configurable timeout, buffered events are force-flushed with a warning log, the connector continues running; if the stall persists, the warning is repeated on each flush cycle.
 
-- **MQ offset expired** (Case 7): If the stored MQ checkpoint position is no longer available on the broker, the connector stops with a descriptive error and waits for manual intervention.
+- **MQ offset expired** (Case 7): If the stored MQ checkpoint position is no longer available on the broker, behavior is determined by `snapshot.mode`. 
+  - `initial` re-runs the full snapshot;
+  -  `never` stops with a descriptive error.
 
 - **Collection not found at startup** (Case 8): If `EtcdMetadataReader` cannot find metadata for a configured collection in etcd, the connector stops immediately following Debezium's fail-fast convention.
+---
+**Appendix B: Component 2 Detail**
+
+`FieldSchema → Column` mapping:
+- `jdbcType` set to `Types.OTHER` uniformly
+- `fieldID` used as `position`; fallback to list index if zero
+- Primary key fields passed to `TableSchemaBuilder` separately via `FieldSchema.getIsPrimaryKey()`
+- `FloatVector` and `Array` types: dimension and element type encoded in `column.typeExpression()`, parsed by `MilvusValueConverter` at conversion time
+
+Type map:
+
+| Milvus DataType | Kafka Connect output |
+|---|---|
+| `Bool` | `BOOLEAN` |
+| `Int8`–`Int64` | `INT8`–`INT64` |
+| `Float` / `Double` | `FLOAT32` / `FLOAT64` |
+| `VarChar` / `String` | `STRING` |
+| `JSON` | `Json.builder()` |
+| `FloatVector` | `io.debezium.data.vector.FloatVector` |
+| `BinaryVector`, `Float16Vector`, `BFloat16Vector`, `Int8Vector`, `SparseFloatVector` | `BYTES` |
+| `Array` | `SchemaBuilder.array(elementSchema)` |
+
+---
+### Appendix C: MilvusConnectorConfig properties
+
+| Group | Property | Required | Default | Notes |
+|---|---|---|---|---|
+| **Connection** | `milvus.etcd.endpoints` | ✅ | — | Comma-separated |
+| | `milvus.etcd.root.path` | | `by-dev` | |
+| | `milvus.uri` | ✅ | `http://localhost:19530` | Replaces `HOSTNAME`/`PORT` |
+| | `milvus.token` | | — | PASSWORD type, optional |
+| **MQ** | `milvus.mq.type` | ✅ | `kafka` | `kafka` / `pulsar` |
+| | `milvus.kafka.bootstrap.servers` | conditional | — | Required when `mq.type=kafka` |
+| | `milvus.pulsar.service.url` | conditional | — | Required when `mq.type=pulsar` |
+| **Filters** | `collection.include.list` | | — | Maps to `TABLE_INCLUDE_LIST` |
+| **Snapshot** | `snapshot.mode` | | `initial` | `initial` / `never` |
+
+MQ validation: if `mq.type=kafka` but `bootstrap.servers` is absent (or vice versa for Pulsar), the connector fails at startup with a descriptive error.
+
+Expired MQ offset behavior is determined by `snapshot.mode`:
+- `initial` → treat as a new deployment, re-run snapshot
+- `never` → stop with a descriptive error
+---
+### Appendix D: MilvusOffsetContext offset structure
+```
+key   = { "pchannel": "<pchannel_name>" }
+value = {
+    "mq_topic":          String,
+    "mq_partition":      int,        // Kafka only
+    "mq_offset":         long,       // Kafka only
+    "pulsar_ledger_id":  long,       // Pulsar only
+    "pulsar_entry_id":   long,       // Pulsar only
+    "vchannel_states":   String      // JSON-serialized map
+        // e.g. { "vchannel_A": { "tso": 123, "snapshot_completed": true }, ... }
+}
+```
+- `tso` — used for dedup during streaming; messages with tso ≤ stored value are skipped.  
+- `snapshot_completed` — controls restart behavior; cannot be replaced by tso since snapshot uses the SDK, not MQ.
+
+Restart recovery logic:
+- `snapshot_completed = false` → re-run snapshot with a fresh `guarantee_ts` read from etcd
+- `snapshot_completed = true` → seek to stored pchannel MQ position, use tso for dedup
