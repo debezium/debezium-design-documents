@@ -579,16 +579,16 @@ Type map:
 ### Appendix C: MilvusConnectorConfig properties
 
 | Group | Property | Required | Default | Notes |
-|---|---|---|---|---|
-| **Connection** | `milvus.etcd.endpoints` | ✅ | — | Comma-separated |
-| | `milvus.etcd.root.path` | | `by-dev` | |
-| | `milvus.uri` | ✅ | `http://localhost:19530` | Replaces `HOSTNAME`/`PORT` |
-| | `milvus.token` | | — | PASSWORD type, optional |
-| **MQ** | `milvus.mq.type` | ✅ | `kafka` | `kafka` / `pulsar` |
-| | `milvus.kafka.bootstrap.servers` | conditional | — | Required when `mq.type=kafka` |
-| | `milvus.pulsar.service.url` | conditional | — | Required when `mq.type=pulsar` |
-| **Filters** | `collection.include.list` | | — | Maps to `TABLE_INCLUDE_LIST` |
-| **Snapshot** | `snapshot.mode` | | `initial` | `initial` / `never` |
+|---|---|--------|---|---|
+| **Connection** | `milvus.etcd.endpoints` | required| none | Comma-separated |
+| | `milvus.etcd.root.path` |optional | `by-dev` | |
+| | `milvus.uri` |required| `http://localhost:19530` | Replaces `HOSTNAME`/`PORT` |
+| | `milvus.token` |optional | none | PASSWORD type, optional |
+| **MQ** | `milvus.mq.type` | required | `kafka` | `kafka` / `pulsar` |
+| | `milvus.kafka.bootstrap.servers` | conditional | none | Required when `mq.type=kafka` |
+| | `milvus.pulsar.service.url` | conditional | none | Required when `mq.type=pulsar` |
+| **Filters** | `collection.include.list` | optional | none | Maps to `TABLE_INCLUDE_LIST` |
+| **Snapshot** | `snapshot.mode` |optional | `initial` | `initial` / `never` |
 
 MQ validation: if `mq.type=kafka` but `bootstrap.servers` is absent (or vice versa for Pulsar), the connector fails at startup with a descriptive error.
 
