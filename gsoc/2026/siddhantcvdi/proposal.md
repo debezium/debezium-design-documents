@@ -376,7 +376,7 @@ Before coding starts I plan to:
 
 ---
 
-### Week 2 — Schema Handling
+### Week 2: Schema Handling
 
 - Implement a schema registry that reads all table definitions dynamically from sqlite_master.
 - Build and maintain a root page number to table name map so the WAL parsing engine can immediately identify which table a given WAL frame belongs to
@@ -384,7 +384,7 @@ Before coding starts I plan to:
 
 ---
 
-### Week 3 — Initial Snapshot
+### Week 3: Initial Snapshot
 
 - Implement the snapshot phase using `BEGIN IMMEDIATE` to acquire an exclusive writer lock and get the initial state.
 - Implement an offset context that stores `snapshot_completed`, `data_version`, `wal_frame_index`, and per-table `last_rowid`
@@ -393,7 +393,7 @@ Before coding starts I plan to:
 
 ---
 
-### Week 4 — Varint Decoder & Page Decoder
+### Week 4: Varint Decoder & Page Decoder
 
 - Implement a varint decoder for SQLite's variable-length integer encoding.
 - Implement a page decoder that checks the page type byte (`0x0D` for table leaf), reads the cell pointer array, and for each cell parses required details. 
@@ -402,7 +402,7 @@ Before coding starts I plan to:
 
 ---
 
-### Week 5 — WAL Reader & Differ
+### Week 5: WAL Reader & Differ
 
 - Implement a WAL reader that opens `.db-wal` as a `FileChannel`, parses the 32-byte WAL header to extract page size and salt values, reads frame headers sequentially, validates salts, and groups frames into committed transactions using the commit marker.
 - Implement a WAL differ that retrieves old page state from the page cache or the database file as a fallback, calls the page decoder on both old and new pages, diffs decoded rows by rowid, and produces INSERT/UPDATE/DELETE change events with correct before/after values.
@@ -410,13 +410,13 @@ Before coding starts I plan to:
 
 ---
 
-## Phase 2 — Midterm
+## Phase 2: Midterm
 
 At this point we have snapshot working end to end, WAL parsing engine fully unit tested, basic streaming working for simple tables. Remaining work is streaming orchestration.
 
 ---
 
-### Week 6 — Streaming Loop
+### Week 6: Streaming Loop
 
 - Implement the main streaming loop: `WatchService` on the `.db-wal` directory for OS-level file modification events.
 - Implement a change record emitter that builds Debezium `SourceRecord` objects with before/after `Struct` values and Avro-compatible field and topic naming.
@@ -425,7 +425,7 @@ At this point we have snapshot working end to end, WAL parsing engine fully unit
 
 ---
 
-### Week 7 — Checkpoint Lifecycle
+### Week 7: Checkpoint Lifecycle
 
 - Hold `BEGIN` on a dedicated reader connection to prevent WAL reset mid-cycle
 - Register a WAL hook via `sqlite3_wal_hook()` through the `sqlite-jdbc` native API to suppress all automatic checkpoints regardless of which connection triggers them
@@ -435,7 +435,7 @@ At this point we have snapshot working end to end, WAL parsing engine fully unit
 
 ---
 
-### Week 8 — Restart Recovery & Schema Changes
+### Week 8: Restart Recovery & Schema Changes
 
 - Implement restart recovery.
 - Implement schema change handling.
@@ -443,7 +443,7 @@ At this point we have snapshot working end to end, WAL parsing engine fully unit
 
 ---
 
-### Week 9 — Overflow Pages & WITHOUT ROWID
+### Week 9: Overflow Pages & WITHOUT ROWID
 
 - Implement overflow page chain following in the page decoder and detect when a cell's payload exceeds the inline threshold.
 - Implement `WITHOUT ROWID` table handling.
@@ -451,7 +451,7 @@ At this point we have snapshot working end to end, WAL parsing engine fully unit
 
 ---
 
-### Week 10 — Integration Testing & Bug Fixes
+### Week 10: Integration Testing & Bug Fixes
 
 - Full integration test suite: snapshot, streaming, restart, schema change, checkpoint, overflow pages, multi-table, `WITHOUT ROWID`
 - Fix any bugs surfaced by integration tests
@@ -460,13 +460,13 @@ At this point we have snapshot working end to end, WAL parsing engine fully unit
 
 ---
 
-### Week 11 — Polish & Code Review Preparation
+### Week 11: Polish & Code Review Preparation
 
 - Dedicated week for code quality, addressing mentor review feedback, and preparing the final writeup. No new features, the main focus is on making the existing code production-ready and ensuring the project is in a state that can be submitted and maintained by the community.
 
 ---
 
-### Final Week — Documentation & Submission
+### Final Week: Documentation & Submission
 
 - Complete README: prerequisites, quick start, full configuration reference, deployment guide for both Kafka Connect and Embedded Engine
 - Document known limitations
@@ -484,4 +484,5 @@ From May to mid-July I am on college vacation, which means no classes and maximu
 I am committed to communicating proactively with my mentors if anything changes, and to maintaining consistent weekly updates regardless of workload elsewhere.
 
 ## Post GSOC Commitments
+I intend to remain an active contributor to the Debezium project beyond the GSoC period. The SQLite connector will be in a functional state by the end of GSoC, but like any new connector there will be follow-up work. I will stay engaged and continue improving the connector.
 
