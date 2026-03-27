@@ -94,6 +94,23 @@ Apart from the technical challenge, SQLite is used in a huge number of applicati
 
 This section focuses on the technical implemetation of SQLite Source Connector. Databases like PostgreSQL and MySQL expose change events through a network replication protocol. SQLite has no such protocol. It is an embedded, file-based database with no network interface.
 
+## Prototype
+
+To validate the core WAL parsing approach before implementing the full connector, I built a Python prototype consisting of two scripts:
+
+- [`setup_db.py`](prototype/setup_db.py) — Creates a test SQLite database in WAL mode, populates it with sample data, and performs INSERT/UPDATE/DELETE operations to generate WAL frames for testing.
+- [`wal_parser.py`](prototype/wal_parser.py) — Parses the WAL file binary, decodes B-tree leaf pages, extracts row data using varint and serial type decoding, and diffs old/new page states to produce change events.
+
+The output (attached) shows the parser correctly detecting all three transactions from raw binary:
+
+### INSERT Event
+![alt text](images/image.png)
+### UPDATE Event
+![alt text](images/image-1.png)
+### DELETE Event
+![alt text](images/image-2.png)
+
+### Architecture of SQLite Connector
 ![alt text](images/architecture.png)
 
 At a high level, the connector works as follows. On first startup it performs a blocked snapshot reading all existing rows from tracked tables. Once the snapshot completes, the streaming phase begins. A WatchService monitors the .db-wal file for OS-level modification events, gated by PRAGMA data_version to confirm only committed writes trigger a parsing cycle. When a change is detected, the WAL reader parses frame headers and groups them into committed transactions. The page decoder then decodes the raw B-tree leaf pages reading cell pointers, varints, and serial types to reconstruct row values. The WAL differ compares the new page state against the old state, retrieved either from the in-memory page cache or the .db file directly and produces INSERT, UPDATE, or DELETE events with correct before and after values. These events are converted into Debezium SourceRecord objects and placed on the ChangeEventQueue, which Kafka Connect drains via poll() and publishes to Kafka topics. Throughout streaming, the connector holds an open reader transaction and registers a WAL hook to prevent unexpected checkpoints from invalidating the page cache, performing its own controlled checkpoint at configurable intervals.
@@ -350,7 +367,6 @@ The connector is only good if it works in every scenario. The WAL parsing engine
 - Integration tests covering all major CDC scenarios end-to-end
 - README with setup instructions, config reference, and deployment guide
 - Documentation of known limitations
-
 
 # Roadmap
 
