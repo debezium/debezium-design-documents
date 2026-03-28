@@ -1,4 +1,4 @@
-# Debezium: SQLite Source Connector
+# Debezium source connector for SQLite
 
 ## About Me
 
