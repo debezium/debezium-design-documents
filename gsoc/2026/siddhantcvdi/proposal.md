@@ -527,7 +527,21 @@ The connector is only good if it works in every scenario. The WAL parsing engine
 - README with setup instructions, config reference, and deployment guide
 - Documentation of known limitations
 
+## Known Limitations
+
+The following limitations are inherent to SQLite's architecture or to the scope of this project. They are documented explicitly rather than treated as bugs to be fixed later.
+ 
+| Limitation | Reason |
+|---|---|
+| Co-located deployment only | SQLite has no network protocol — the connector reads the `.db` file directly via `FileChannel` and must run on the same machine |
+| WAL mode required | Rollback journal mode deletes change history on every commit — there is nothing to read for CDC |
+| SQLite ≥ 3.51.3 recommended | Earlier versions have a WAL reset bug that can cause data corruption under concurrent checkpoint conditions, fixed in March 2026 |
+| Application connections should also set `wal_autocheckpoint=0` | The WAL hook suppresses checkpoints on the database level, but documenting this for application connections provides an additional safety layer |
+| `WITHOUT ROWID` and overflow pages handled in Phase 2 | These are valid SQLite features and will be supported, but the iterative approach recommended by mentors prioritises common cases first |
+
 # Roadmap
+
+GSoC 2026 allocates approximately 350 hours for a large project over 12 coding weeks. I plan to commit a minimum of **30 hours per week** throughout the coding period.
 
 ## Phase 1
 
@@ -660,4 +674,14 @@ I am committed to communicating proactively with my mentors if anything changes,
 
 ## Post GSOC Commitments
 I intend to remain an active contributor to the Debezium project beyond the GSoC period. The SQLite connector will be in a functional state by the end of GSoC, but like any new connector there will be follow-up work. I will stay engaged and continue improving the connector.
+
+ # References
+ 
+- [SQLite WAL documentation](https://www.sqlite.org/wal.html)
+- [SQLite file format specification](https://www.sqlite.org/fileformat2.html)
+- [SQLite PRAGMA reference](https://www.sqlite.org/pragma.html)
+- [Debezium connector development guide](https://debezium.io/documentation/reference/stable/development/engine.html)
+- [Debezium Postgres connector: reference implementation](https://github.com/debezium/debezium/tree/main/debezium-connector-postgres)
+- [Mentor discussion on Zulip](https://debezium.zulipchat.com/#narrow/channel/573881-community-gsoc/topic/Siddhant.20-.20SQLite.20connector/with/582273764)
+- [SQLite WAL reset bug — fixed in 3.51.3](https://www.sqlite.org/wal.html#the_wal_reset_bug)
 
