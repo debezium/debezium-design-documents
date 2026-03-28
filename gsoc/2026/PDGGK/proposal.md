@@ -46,6 +46,9 @@ I have also built the Debezium codebase locally and run the PostgreSQL connector
 | [iceberg#15463](https://github.com/apache/iceberg/pull/15463): Fix JDBC ResultSet leaks in JdbcCatalog and JdbcUtil | Merged |
 | [opencv#28502](https://github.com/opencv/opencv/pull/28502): Fix erode/dilate documentation parameter names | Merged |
 | [opencv#28699](https://github.com/opencv/opencv/pull/28699): Replace System.exit with exceptions in HighGui | Merged |
+| [sw360#3969](https://github.com/eclipse-sw360/sw360/pull/3969): Fix CSVReader resource leak in UserDatabaseHandler | Open |
+| [sw360#3968](https://github.com/eclipse-sw360/sw360/pull/3968): Fix resource leak in SVMUtils | Open |
+| [sw360#3967](https://github.com/eclipse-sw360/sw360/pull/3967): Fix FileInputStream leak in ComponentDatabaseHandler | Open |
 
 All contributions target resource management, connector reliability, and correct lifecycle handling — the same work a CDC connector demands.
 
