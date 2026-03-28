@@ -30,13 +30,12 @@ During the build process, Maven was printing warnings due to a missing explicit 
 | Repo   | `debezium/debezium-platform` |
 | Status | Merged |
 
-Implemented a Redis Connection Validator in the `debezium-platform-conductor` module, which validates Redis connection configuration before the connector starts. The validator checks host, port, and optional SSL settings, and gives clear error messages for misconfigured fields.
+I implemented a Redis Connection Validator in the `debezium-platform-conductor` module that validates Redis connection configuration before the connector starts. It checks host, port, and optional SSL settings and returns clear error messages for misconfigured fields.
 
 **Key Changes:**
-- `RedisConnectionValidator.java` - Core validation logic.
-- `RedisConnectionValidatorTest.java` - Unit tests covering valid and invalid configurations
-- `RedisConnectionValidatorAuthIT.java` - Integration tests for authenticated Redis connections
-- `RedisTestResource` / `RedisTestResourceAuthenticated` - Test containers pulling from **mirror.gcr.io/redis:7-alpine**
+- `RedisConnectionValidator.java` — core validation logic
+- `RedisConnectionValidatorTest.java` — unit tests covering valid and invalid configurations
+- `RedisConnectionValidatorAuthIT.java` — integration tests for authenticated Redis connections using Testcontainers
 
 ### [Fix stale `database.*` namespace references in SQL Server](https://github.com/debezium/debezium/pull/7136)
 
@@ -45,13 +44,12 @@ Implemented a Redis Connection Validator in the `debezium-platform-conductor` mo
 | Repo   | `debezium/debezium` |
 | Status | Merged |
 
-The JDBC driver passthrough configuration namespace was renamed from `database.` to `driver.` in Debezium 2.0, but the SQL Server connector retained several stale references to the old namespace. This PR replaces them across tests, `pom.xml`, and documentation, and expands the SSL configuration docs with clearer examples.
+The JDBC driver passthrough configuration namespace was renamed from `database.` to `driver.` in Debezium 2.0, but the SQL Server connector retained several stale references to the old namespace. I replaced them across the codebase and expanded the SSL configuration documentation with clearer examples.
 
-Key changes:
-- `pom.xml` - Updated all the SSL properties to use `driver.` prefix matching the camelCase keys expected by the Microsoft JDBC driver.
-- `SqlServerConnectorIT.java` - Updated test config to use new namespace and keys.
-- `TestHelper.java` - Extended ther helpers to also read `driver.*` system properties alongside `database.*`, so Maven-set SSL properties are correctly picked up during tests.
-- `SqlServerConnectorConfig.java` - Replaced the hardcoded `database.applicationIntent` falling back to `database.applicationIntent` for backward compatibility.
+**Key changes:**
+- Updated `pom.xml` SSL properties to use the `driver.` prefix matching the Microsoft JDBC driver's expected keys
+- Extended `TestHelper.java` to read `driver.*` system properties alongside `database.*` so Maven-set SSL properties are correctly picked up during tests
+- Replaced the hardcoded `database.applicationIntent` reference in `SqlServerConnectorConfig.java` while retaining backward compatibility
 
 ### [Google Cloud Pub/Sub connection validator](https://github.com/debezium/debezium-platform/pull/279)
 
@@ -60,21 +58,14 @@ Key changes:
 | Repo   | `debezium/debezium-platform` |
 | Status | Under Review |
 
-This Pull Request implements **PubSubConnectionValidator** in the **debezium-platform-conductor** module, validating Google Cloud Pub/Sub destinations before the connector starts. 
-
-**It supports three credential modes:**
-- Application Default Credentials (ADC) — for GCP-hosted environments and it needs no config. 
-- Inline service account JSON via `credentials.json`
-- Custom gRPC endpoint via `endpoint` for the Pub/Sub Emulator
+I implemented a Pub/Sub Connection Validator in the `debezium-platform-conductor` module with a two-phase validation approach - config validation first without any network calls, followed by a live connection attempt. It supports three credential modes: Application Default Credentials for GCP-hosted environments, inline service account JSON, and a custom gRPC endpoint for the Pub/Sub Emulator.
 
 **Key changes:**
-- `PubSubConnectionValidator.java`: Added a two-phase validation which checks the config first (without network) and then attempts to make a connection. Add support for emulator via `ManagedChannel` with `NoCredentialsProvider`
-- `connection-schemas.json`: Added **GOOGLE_PUB_SUB** schema entry with **project.id** as the only required field
-- `application.yml`: Added timeout and scope config properties
-- `PubSubConnectionValidatorTest.java`: Wrote unit tests covering cases like null config, missing `project.id`, malformed inline credentials, whitespace trimming, and optional field acceptance
-- `PubSubConnectionValidatorIT.java`: It includes integration tests against a live PubSubEmulatorContainer, including unreachable endpoint failure
-- `PubSubTestResource.java`: This is a quarkus test resource managing the `gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators` container lifecycle
-- `pom.xml`: Added **google-cloud-pubsub** and **testcontainers-gcloud** dependencies
+- `PubSubConnectionValidator.java` — core validation logic with emulator support via `ManagedChannel` and `NoCredentialsProvider`
+- `PubSubConnectionValidatorTest.java` — unit tests covering null config, missing `project.id`, malformed credentials, and whitespace handling
+- `PubSubConnectionValidatorIT.java` — integration tests against a live Pub/Sub emulator container
+- `PubSubTestResource.java` — Quarkus test resource managing the emulator container lifecycle
+- Added `GOOGLE_PUB_SUB` schema entry to `connection-schemas.json` and necessary dependencies to `pom.xml`
 
 ## Project Information
 
