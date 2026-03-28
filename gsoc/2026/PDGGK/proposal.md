@@ -31,7 +31,7 @@
 
 I have also built the Debezium codebase locally and run the PostgreSQL connector's integration test suite.
 
-**Other open-source contributions** (14 merged PRs across 6 organizations):
+**Other open-source contributions** (11 merged PRs across 5 organizations — Apache Beam, IoTDB, ShardingSphere, Iceberg, OpenCV):
 
 | Contribution | Status |
 |-------------|--------|
@@ -44,9 +44,6 @@ I have also built the Debezium codebase locally and run the PostgreSQL connector
 | [shardingsphere#38244](https://github.com/apache/shardingsphere/pull/38244): Fix RegistryCenter resource leak in StatisticsCollectJobWorker | Merged |
 | [shardingsphere#38152](https://github.com/apache/shardingsphere/pull/38152): Fix ClassCastException reading ZooKeeper config | Merged |
 | [iceberg#15463](https://github.com/apache/iceberg/pull/15463): Fix JDBC ResultSet leaks in JdbcCatalog and JdbcUtil | Merged |
-| [sw360#3925](https://github.com/eclipse-sw360/sw360/pull/3925): Prevent NPE in vulnerability tracking sorting | Merged |
-| [sw360#3929](https://github.com/eclipse-sw360/sw360/pull/3929): Close streams in attachment bundle download | Merged |
-| [sw360#3956](https://github.com/eclipse-sw360/sw360/pull/3956): Replace String concatenation with StringBuilder | Merged |
 | [opencv#28502](https://github.com/opencv/opencv/pull/28502): Fix erode/dilate documentation parameter names | Merged |
 | [opencv#28699](https://github.com/opencv/opencv/pull/28699): Replace System.exit with exceptions in HighGui | Merged |
 
