@@ -119,7 +119,9 @@ The SQLite connector follows the same architecture as existing Debezium relation
 
 #### WAL-Based Change Detection
 
-![WAL Frame Format](wal-frame-format.png)
+![WAL Frame Format — Header + Frame Structure](wal-frame-format-part1.png)
+
+![WAL Frame Format — Commit Boundary](wal-frame-format-part2.png)
 
 SQLite's WAL file consists of a 32-byte header followed by a sequence of frames. Each frame contains a 24-byte frame header and a full database page image:
 
