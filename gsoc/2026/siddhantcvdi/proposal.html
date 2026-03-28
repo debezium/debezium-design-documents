@@ -1,0 +1,1033 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>proposal.md</title>
+<meta http-equiv="Content-type" content="text/html;charset=UTF-8">
+
+<style>
+/* https://github.com/microsoft/vscode/blob/master/extensions/markdown-language-features/media/markdown.css */
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+body {
+	font-family: var(--vscode-markdown-font-family, -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif);
+	font-size: var(--vscode-markdown-font-size, 14px);
+	padding: 0 26px;
+	line-height: var(--vscode-markdown-line-height, 22px);
+	word-wrap: break-word;
+}
+
+#code-csp-warning {
+	position: fixed;
+	top: 0;
+	right: 0;
+	color: white;
+	margin: 16px;
+	text-align: center;
+	font-size: 12px;
+	font-family: sans-serif;
+	background-color:#444444;
+	cursor: pointer;
+	padding: 6px;
+	box-shadow: 1px 1px 1px rgba(0,0,0,.25);
+}
+
+#code-csp-warning:hover {
+	text-decoration: none;
+	background-color:#007acc;
+	box-shadow: 2px 2px 2px rgba(0,0,0,.25);
+}
+
+body.scrollBeyondLastLine {
+	margin-bottom: calc(100vh - 22px);
+}
+
+body.showEditorSelection .code-line {
+	position: relative;
+}
+
+body.showEditorSelection .code-active-line:before,
+body.showEditorSelection .code-line:hover:before {
+	content: "";
+	display: block;
+	position: absolute;
+	top: 0;
+	left: -12px;
+	height: 100%;
+}
+
+body.showEditorSelection li.code-active-line:before,
+body.showEditorSelection li.code-line:hover:before {
+	left: -30px;
+}
+
+.vscode-light.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(0, 0, 0, 0.15);
+}
+
+.vscode-light.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(0, 0, 0, 0.40);
+}
+
+.vscode-light.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+.vscode-dark.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(255, 255, 255, 0.4);
+}
+
+.vscode-dark.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(255, 255, 255, 0.60);
+}
+
+.vscode-dark.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+.vscode-high-contrast.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(255, 160, 0, 0.7);
+}
+
+.vscode-high-contrast.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(255, 160, 0, 1);
+}
+
+.vscode-high-contrast.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+img {
+	max-width: 100%;
+	max-height: 100%;
+}
+
+a {
+	text-decoration: none;
+}
+
+a:hover {
+	text-decoration: underline;
+}
+
+a:focus,
+input:focus,
+select:focus,
+textarea:focus {
+	outline: 1px solid -webkit-focus-ring-color;
+	outline-offset: -1px;
+}
+
+hr {
+	border: 0;
+	height: 2px;
+	border-bottom: 2px solid;
+}
+
+h1 {
+	padding-bottom: 0.3em;
+	line-height: 1.2;
+	border-bottom-width: 1px;
+	border-bottom-style: solid;
+}
+
+h1, h2, h3 {
+	font-weight: normal;
+}
+
+table {
+	border-collapse: collapse;
+}
+
+table > thead > tr > th {
+	text-align: left;
+	border-bottom: 1px solid;
+}
+
+table > thead > tr > th,
+table > thead > tr > td,
+table > tbody > tr > th,
+table > tbody > tr > td {
+	padding: 5px 10px;
+}
+
+table > tbody > tr + tr > td {
+	border-top: 1px solid;
+}
+
+blockquote {
+	margin: 0 7px 0 5px;
+	padding: 0 16px 0 10px;
+	border-left-width: 5px;
+	border-left-style: solid;
+}
+
+code {
+	font-family: Menlo, Monaco, Consolas, "Droid Sans Mono", "Courier New", monospace, "Droid Sans Fallback";
+	font-size: 1em;
+	line-height: 1.357em;
+}
+
+body.wordWrap pre {
+	white-space: pre-wrap;
+}
+
+pre:not(.hljs),
+pre.hljs code > div {
+	padding: 16px;
+	border-radius: 3px;
+	overflow: auto;
+}
+
+pre code {
+	color: var(--vscode-editor-foreground);
+	tab-size: 4;
+}
+
+/** Theming */
+
+.vscode-light pre {
+	background-color: rgba(220, 220, 220, 0.4);
+}
+
+.vscode-dark pre {
+	background-color: rgba(10, 10, 10, 0.4);
+}
+
+.vscode-high-contrast pre {
+	background-color: rgb(0, 0, 0);
+}
+
+.vscode-high-contrast h1 {
+	border-color: rgb(0, 0, 0);
+}
+
+.vscode-light table > thead > tr > th {
+	border-color: rgba(0, 0, 0, 0.69);
+}
+
+.vscode-dark table > thead > tr > th {
+	border-color: rgba(255, 255, 255, 0.69);
+}
+
+.vscode-light h1,
+.vscode-light hr,
+.vscode-light table > tbody > tr + tr > td {
+	border-color: rgba(0, 0, 0, 0.18);
+}
+
+.vscode-dark h1,
+.vscode-dark hr,
+.vscode-dark table > tbody > tr + tr > td {
+	border-color: rgba(255, 255, 255, 0.18);
+}
+
+</style>
+
+<style>
+/* Tomorrow Theme */
+/* http://jmblog.github.com/color-themes-for-google-code-highlightjs */
+/* Original theme - https://github.com/chriskempson/tomorrow-theme */
+
+/* Tomorrow Comment */
+.hljs-comment,
+.hljs-quote {
+	color: #8e908c;
+}
+
+/* Tomorrow Red */
+.hljs-variable,
+.hljs-template-variable,
+.hljs-tag,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class,
+.hljs-regexp,
+.hljs-deletion {
+	color: #c82829;
+}
+
+/* Tomorrow Orange */
+.hljs-number,
+.hljs-built_in,
+.hljs-builtin-name,
+.hljs-literal,
+.hljs-type,
+.hljs-params,
+.hljs-meta,
+.hljs-link {
+	color: #f5871f;
+}
+
+/* Tomorrow Yellow */
+.hljs-attribute {
+	color: #eab700;
+}
+
+/* Tomorrow Green */
+.hljs-string,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-addition {
+	color: #718c00;
+}
+
+/* Tomorrow Blue */
+.hljs-title,
+.hljs-section {
+	color: #4271ae;
+}
+
+/* Tomorrow Purple */
+.hljs-keyword,
+.hljs-selector-tag {
+	color: #8959a8;
+}
+
+.hljs {
+	display: block;
+	overflow-x: auto;
+	color: #4d4d4c;
+	padding: 0.5em;
+}
+
+.hljs-emphasis {
+	font-style: italic;
+}
+
+.hljs-strong {
+	font-weight: bold;
+}
+</style>
+
+<style>
+/*
+ * Markdown PDF CSS
+ */
+
+ body {
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif, "Meiryo";
+	padding: 0 12px;
+}
+
+pre {
+	background-color: #f8f8f8;
+	border: 1px solid #cccccc;
+	border-radius: 3px;
+	overflow-x: auto;
+	white-space: pre-wrap;
+	overflow-wrap: break-word;
+}
+
+pre:not(.hljs) {
+	padding: 23px;
+	line-height: 19px;
+}
+
+blockquote {
+	background: rgba(127, 127, 127, 0.1);
+	border-color: rgba(0, 122, 204, 0.5);
+}
+
+.emoji {
+	height: 1.4em;
+}
+
+code {
+	font-size: 14px;
+	line-height: 19px;
+}
+
+/* for inline code */
+:not(pre):not(.hljs) > code {
+	color: #C9AE75; /* Change the old color so it seems less like an error */
+	font-size: inherit;
+}
+
+/* Page Break : use <div class="page"/> to insert page break
+-------------------------------------------------------- */
+.page {
+	page-break-after: always;
+}
+
+</style>
+
+<script src="https://unpkg.com/mermaid/dist/mermaid.min.js"></script>
+</head>
+<body>
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: document.body.classList.contains('vscode-dark') || document.body.classList.contains('vscode-high-contrast')
+          ? 'dark'
+          : 'default'
+    });
+  </script>
+<h1 id="debezium-source-connector-for-sqlite">Debezium: Source Connector for SQLite</h1>
+<h2 id="about-me">About me</h2>
+<ol>
+<li><strong>Name:</strong> Siddhant Chaturvedi (GitHub: <a href="https://github.com/siddhantcvdi">@siddhantcvdi</a>)</li>
+<li><strong>University / Program / Year:</strong> IIIT Gwalior, Integrated BTech+MTech in IT, 3rd Year / Expected Graduation: 2028</li>
+<li><strong>Contact:</strong>
+<ul>
+<li>Email: siddhantcvdi@gmail.com</li>
+<li>Phone: +91 6372207434</li>
+</ul>
+</li>
+<li><strong>Time zone:</strong> IST (UTC+5:30)</li>
+<li><strong>Experience:</strong> Software Engineering Intern at TeemCRM</li>
+<li><a href="https://debezium.zulipchat.com/#narrow/channel/573881-community-gsoc/topic/newcomers/near/577126130">Link to Zulip Introduction</a></li>
+</ol>
+<h2 id="code-contributions">Code Contributions</h2>
+<h3 id="define-explicit-jandex-version-in-quarkus-modules"><a href="https://github.com/debezium/debezium-quarkus/pull/26">Define explicit Jandex version in Quarkus modules</a></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Repo</td>
+<td><code>debezium/debezium-quarkus</code></td>
+</tr>
+<tr>
+<td>Status</td>
+<td>Merged</td>
+</tr>
+</tbody>
+</table>
+<p>During the build process, Maven was printing warnings due to a missing explicit Jandex version, causing it to fall back to a default. I explicitly set the <code>jandex</code> and <code>jandex-maven-plugin</code> versions using the <code>${version.jandex}</code> property in the affected <code>pom.xml</code> files, aligning them with the centralized dependency management.</p>
+<h3 id="connection-validator-for-redis"><a href="https://github.com/debezium/debezium-platform/pull/274">Connection validator for Redis</a></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Repo</td>
+<td><code>debezium/debezium-platform</code></td>
+</tr>
+<tr>
+<td>Status</td>
+<td>Merged</td>
+</tr>
+</tbody>
+</table>
+<p>I implemented a Redis Connection Validator in the <code>debezium-platform-conductor</code> module that validates Redis connection configuration before the connector starts. It checks host, port, and optional SSL settings and returns clear error messages for misconfigured fields.</p>
+<p><strong>Key Changes:</strong></p>
+<ul>
+<li><code>RedisConnectionValidator.java</code> — core validation logic</li>
+<li><code>RedisConnectionValidatorTest.java</code> — unit tests covering valid and invalid configurations</li>
+<li><code>RedisConnectionValidatorAuthIT.java</code> — integration tests for authenticated Redis connections using Testcontainers</li>
+</ul>
+<h3 id="fix-stale-database-namespace-references-in-sql-server"><a href="https://github.com/debezium/debezium/pull/7136">Fix stale <code>database.*</code> namespace references in SQL Server</a></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Repo</td>
+<td><code>debezium/debezium</code></td>
+</tr>
+<tr>
+<td>Status</td>
+<td>Merged</td>
+</tr>
+</tbody>
+</table>
+<p>The JDBC driver passthrough configuration namespace was renamed from <code>database.</code> to <code>driver.</code> in Debezium 2.0, but the SQL Server connector retained several stale references to the old namespace. I replaced them across the codebase and expanded the SSL configuration documentation with clearer examples.</p>
+<p><strong>Key changes:</strong></p>
+<ul>
+<li>Updated <code>pom.xml</code> SSL properties to use the <code>driver.</code> prefix matching the Microsoft JDBC driver's expected keys</li>
+<li>Extended <code>TestHelper.java</code> to read <code>driver.*</code> system properties alongside <code>database.*</code> so Maven-set SSL properties are correctly picked up during tests</li>
+<li>Replaced the hardcoded <code>database.applicationIntent</code> reference in <code>SqlServerConnectorConfig.java</code> while retaining backward compatibility</li>
+</ul>
+<h3 id="google-cloud-pubsub-connection-validator"><a href="https://github.com/debezium/debezium-platform/pull/279">Google Cloud Pub/Sub connection validator</a></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Repo</td>
+<td><code>debezium/debezium-platform</code></td>
+</tr>
+<tr>
+<td>Status</td>
+<td>Under Review</td>
+</tr>
+</tbody>
+</table>
+<p>I implemented a Pub/Sub Connection Validator in the <code>debezium-platform-conductor</code> module with a two-phase validation approach - config validation first without any network calls, followed by a live connection attempt. It supports three credential modes: Application Default Credentials for GCP-hosted environments, inline service account JSON, and a custom gRPC endpoint for the Pub/Sub Emulator.</p>
+<p><strong>Key changes:</strong></p>
+<ul>
+<li><code>PubSubConnectionValidator.java</code> — core validation logic with emulator support via <code>ManagedChannel</code> and <code>NoCredentialsProvider</code></li>
+<li><code>PubSubConnectionValidatorTest.java</code> — unit tests covering null config, missing <code>project.id</code>, malformed credentials, and whitespace handling</li>
+<li><code>PubSubConnectionValidatorIT.java</code> — integration tests against a live Pub/Sub emulator container</li>
+<li><code>PubSubTestResource.java</code> — Quarkus test resource managing the emulator container lifecycle</li>
+<li>Added <code>GOOGLE_PUB_SUB</code> schema entry to <code>connection-schemas.json</code> and necessary dependencies to <code>pom.xml</code></li>
+</ul>
+<h2 id="project-information">Project Information</h2>
+<h3 id="abstract">Abstract</h3>
+<p>SQLite is a lightweight, embedded relational database widely used in desktop, mobile, and edge/IoT applications, where it serves as the primary data store for local application state. Despite its widespread adoption, no production-ready Change Data Capture connector exists for SQLite. This project proposes a Debezium source connector for SQLite that captures row-level changes by directly parsing the SQLite Write Ahead Log (WAL) file. Unlike other Debezium connectors that receive structured change events from a network replication protocol, this connector decodes raw SQLite B-tree leaf pages, reconstructs before and after row states by diffing page versions across WAL frames and produces standard change events operations without requiring any modifications to the main application using the database. The connector supports an initial blocked snapshot, dynamic schema introspection, and a controlled checkpoint lifecycle. By bridging SQLite with Kafka and Debezium Server, this connector enables audit trails, observability, and edge-to-cloud data pipelines for the vast ecosystem of applications already built on SQLite.</p>
+<h3 id="why-this-project">Why this project?</h3>
+<p>I was introduced to Change Data Capture while exploring Debezium as part of GSoC and I found it to be genuinely interesting. The idea of capturing changes directly from a database without relying on base application logic felt very elegant. As I read more about Debezium and went through parts of the codebase, I was impressed by the connector models for various databases.</p>
+<p>Unlike systems where change events are already exposed in a more structured form, this project requires working with the database internals. Understanding WAL behavior, page-level changes, and binary structures makes it a much deeper systems problem, and that is exactly what makes it exciting to me. I enjoy work that involves digging deep and understanding how things actually function internally.</p>
+<p>Apart from the technical challenge, SQLite is used in a huge number of applications like embedded, mobile, and local-first environments, but it does not yet have a strong CDC. Building a connector for it would make real-time change capture possible in these places, which makes the work feel quite practical.</p>
+<h1 id="technical-description">Technical Description</h1>
+<p>This section focuses on the technical implemetation of SQLite Source Connector. Databases like PostgreSQL and MySQL expose change events through a network replication protocol. SQLite has no such protocol. It is an embedded, file-based database with no network interface.</p>
+<h2 id="prototype">Prototype</h2>
+<p>To validate the core WAL parsing approach before implementing the full connector, I built a Python prototype consisting of two scripts:</p>
+<ul>
+<li><a href="prototype/setup_db.py"><code>setup_db.py</code></a> — Creates a test SQLite database in WAL mode, populates it with sample data, and performs INSERT/UPDATE/DELETE operations to generate WAL frames for testing.</li>
+<li><a href="prototype/wal_parser.py"><code>wal_parser.py</code></a> — Parses the WAL file binary, decodes B-tree leaf pages, extracts row data using varint and serial type decoding, and diffs old/new page states to produce change events.</li>
+</ul>
+<p>The output (attached) shows the parser correctly detecting all three transactions from raw binary:</p>
+<h3 id="insert-event">INSERT Event</h3>
+<p><img src="images/image.png" alt="alt text"></p>
+<h3 id="update-event">UPDATE Event</h3>
+<p><img src="images/image-1.png" alt="alt text"></p>
+<h3 id="delete-event">DELETE Event</h3>
+<p><img src="images/image-2.png" alt="alt text"></p>
+<h2 id="architecture-of-sqlite-connector">Architecture of SQLite Connector</h2>
+<p><img src="images/architecture.png" alt="alt text"></p>
+<p>At a high level, the connector works as follows. On first startup it performs a blocked snapshot reading all existing rows from tracked tables. Once the snapshot completes, the streaming phase begins. A WatchService monitors the .db-wal file for OS-level modification events, gated by PRAGMA data_version to confirm only committed writes trigger a parsing cycle. When a change is detected, the WAL reader parses frame headers and groups them into committed transactions. The page decoder then decodes the raw B-tree leaf pages reading cell pointers, varints, and serial types to reconstruct row values. The WAL differ compares the new page state against the old state, retrieved either from the in-memory page cache or the .db file directly and produces INSERT, UPDATE, or DELETE events with correct before and after values. These events are converted into Debezium SourceRecord objects and placed on the ChangeEventQueue, which Kafka Connect drains via poll() and publishes to Kafka topics. Throughout streaming, the connector holds an open reader transaction and registers a WAL hook to prevent unexpected checkpoints from invalidating the page cache, performing its own controlled checkpoint at configurable intervals.</p>
+<p>The Technical Implementation has been divided into 6 main modules:</p>
+<ol>
+<li>Project Skeleton and Configuration</li>
+<li>Schema Handling</li>
+<li>Initial Snapshot</li>
+<li>WAL Parsing Engine</li>
+<li>Streaming</li>
+<li>Testing and Documentation</li>
+</ol>
+<h2 id="module-1---project-skeleton-and-configuration">Module 1 - Project Skeleton and Configuration</h2>
+<h3 id="preface-and-goal">Preface and Goal</h3>
+<p>Every Debezium connector follows the same foundational pattern:</p>
+<ol>
+<li>SourceConnector that validates configuration and spawns tasks.</li>
+<li>SourceTask that runs the main loop</li>
+<li>JDBC connection wrapper that enforces database-specific requirements.</li>
+</ol>
+<p>This module establishes the connector foundation following the standard Debezium connector pattern. The SQLite-specific additions are WAL mode enforcement at startup and disabling auto-checkpoint on the connector connection. The goal is a connector that compiles, connects to SQLite, enforces WAL mode, and fails clearly with useful error messages when configuration is wrong. Every subsequent module builds directly on this foundation</p>
+<h3 id="deliverables">Deliverables</h3>
+<ul>
+<li>Connector compiles against the Debezium BOM and Kafka Connect API.</li>
+<li>Connects to any SQLite .db file via JDBC.</li>
+<li>Enforces PRAGMA journal_mode=WAL on startup and fails immediately if WAL mode is unavailable.</li>
+<li>Disables automatic checkpointing on the connector connection.</li>
+<li>Validates all configuration fields.</li>
+</ul>
+<h3 id="co-located-deployment">Co-located Deployment</h3>
+<p>Every other Debezium connector connects to a remote database server over a network. SQLite has no server and no network protocol. The connector reads that file directly using Java's FileChannel, which means it must run on the same machine as the .db file. This is enforced at startup and documented as a known limitation.</p>
+<h2 id="module-2---schema-handling">Module 2 - Schema Handling</h2>
+<h3 id="preface-and-goal">Preface and Goal</h3>
+<p>Before the connector can decode a single row from the WAL, it needs to know the structure of every table it is monitoring i.e. the column names, their types, which column is the primary key etc.</p>
+<p>The main goal of this module is to dynamically get the schema of any SQLite database without hardcoding and providing column names, types, primary key information, and schema change detection to every other module that needs it.</p>
+<h3 id="deliverables">Deliverables</h3>
+<ul>
+<li>Read and parse all table schemas dynamically from <code>sqlite_master</code></li>
+<li>Provides root page number per table for WAL frame-to-table mapping</li>
+<li>Maps SQLite type affinities to Kafka Connect schema types</li>
+<li>Detects WITHOUT ROWID tables and extracts their composite primary key</li>
+<li>Detects schema changes during streaming via PRAGMA schema_version</li>
+</ul>
+<h3 id="sqlitemaster-sqlites-schema-store"><code>sqlite_master</code>: SQLite's Schema Store</h3>
+<p>Unlike PostgreSQL or MySQL, SQLite stores the raw CREATE TABLE SQL string in a special table called <code>sqlite_master</code>. To know the schema of a table, we need to read this SQL string and parse it on our own.</p>
+<pre class="hljs"><code><div><span class="hljs-keyword">SELECT</span> <span class="hljs-keyword">name</span>, <span class="hljs-keyword">sql</span> <span class="hljs-keyword">FROM</span> sqlite_master <span class="hljs-keyword">WHERE</span> <span class="hljs-keyword">type</span> = <span class="hljs-string">'table'</span>;
+<span class="hljs-comment">-- Returns rows like:</span>
+<span class="hljs-comment">-- name: "orders"</span>
+<span class="hljs-comment">-- sql:  "CREATE TABLE orders (id INTEGER PRIMARY KEY, item TEXT, amount REAL)"</span>
+</div></code></pre>
+<p>To know the schema of a table, the connector reads this SQL string and parses it, extracting column names, declared types, and constraints. This is different from other connectors which can query a structured catalog directly.</p>
+<h3 id="the-rowid-alias">The Rowid Alias</h3>
+<p>When a column is declared <code>INTEGER PRIMARY KEY</code>, SQLite makes it an alias for the table's internal rowid and omits it from the record body entirely. If the connector does not account for this, it reads NULL for that column. The schema registry should flag such columns during parsing so the WAL page decoder knows to substitute the rowid value rather than reading from the record body.</p>
+<h3 id="root-page-mapping">Root Page Mapping</h3>
+<p>The <code>rootpage</code> value tells the connector which page number in the .db file is the root of that table's B-tree. When a WAL frame arrives, the connector knows the page number that changed but not which table it belongs to. So we need to maintain a root page to table name map built from sqlite_master to identify which table a WAL frame is modifying.</p>
+<h3 id="schema-change-detection">Schema Change Detection</h3>
+<p>SQLite increments PRAGMA schema_version on every DDL operation. The connector can poll this value each streaming cycle. When it changes, SqliteDatabaseSchema re-reads sqlite_master, rebuilds the column map, and emits a schema change event.</p>
+<h3 id="rough-structure-of-schema-handling-module">Rough Structure of Schema Handling Module</h3>
+<p><img src="images/module2.png" alt="alt text"></p>
+<p><code>SqliteDatabaseSchema</code> is the single entry point for all schema information in the connector.
+It reads from <code>sqlite_master</code> which produces two outputs: a table to columns map (storing column names, types, rowid-alias flags, and primary key information for each table) and a rootpage to table map (which tells the WAL parsing engine which table a given page number belongs to).</p>
+<p>It uses <code>SqliteValueConverter</code> to handle the mapping from SQLite's type affinities to Kafka Connect schema types, keeping type conversion logic separate from schema introspection logic. The third responsibility of  <code>SqliteDatabaseSchema</code> is polling <code>PRAGMA schema_version</code> each cycle and triggering a full re-read of <code>sqlite_master</code> when it changes.</p>
+<p><strong>The following table represents the SQLite Affinity to Kafka Connect Type mapping:</strong></p>
+<table>
+<thead>
+<tr>
+<th>SQLite Affinity</th>
+<th>Kafka Connect Type</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>INTEGER</td>
+<td>INT64</td>
+</tr>
+<tr>
+<td>REAL</td>
+<td>FLOAT64</td>
+</tr>
+<tr>
+<td>TEXT</td>
+<td>STRING</td>
+</tr>
+<tr>
+<td>BLOB</td>
+<td>BYTES</td>
+</tr>
+<tr>
+<td>NUMERIC</td>
+<td>FLOAT64/ INT64</td>
+</tr>
+</tbody>
+</table>
+<h3 id="implementation-approach">Implementation Approach</h3>
+<p>At startup, <code>SqliteDatabaseSchema</code> queries sqlite_master for all tables and builds both maps in a single pass.  The SQL parser extracts column definitions from the CREATE TABLE statement. For each column it reads the name, determines the SQLite type affinity from the declared type keyword, and checks for <code>PRIMARY KEY</code> and <code>INTEGER PRIMARY KEY</code> (rowid alias):</p>
+<pre class="hljs"><code><div><span class="hljs-function">SqliteColumn <span class="hljs-title">parseColumn</span><span class="hljs-params">(String definition)</span> </span>{
+    String columnName   = extractName(definition);
+    String declaredType = extractType(definition);
+    String affinity     = resolveAffinity(declaredType); <span class="hljs-comment">// INTEGER, REAL, TEXT, BLOB, NUMERIC</span>
+
+    <span class="hljs-keyword">boolean</span> isPrimaryKey  = definition.contains(<span class="hljs-string">"PRIMARY KEY"</span>);
+    <span class="hljs-keyword">boolean</span> isRowidAlias  = affinity.equals(<span class="hljs-string">"INTEGER"</span>) &amp;&amp; isPrimaryKey;
+    <span class="hljs-comment">// isRowidAlias tells page decoder to use rowid value, not record body</span>
+
+    <span class="hljs-keyword">return</span> <span class="hljs-keyword">new</span> SqliteColumn(columnName, affinity, isPrimaryKey, isRowidAlias);
+}
+</div></code></pre>
+<p>For schema change detection, <code>PRAGMA schema_version</code> is polled on each streaming cycle. A change triggers a full re-introspection and a schema change event:</p>
+<pre class="hljs"><code><div><span class="hljs-keyword">long</span> currentVersion = readSchemaVersion();
+
+<span class="hljs-keyword">if</span> (currentVersion != cachedSchemaVersion) {
+    refreshFromSqliteMaster();
+    emitSchemaChangeEvent();
+    cachedSchemaVersion = currentVersion;
+}
+</div></code></pre>
+<h2 id="module-3---initial-snapshot">Module 3 - Initial Snapshot</h2>
+<h3 id="preface-and-goal">Preface and Goal</h3>
+<p>When the connector starts for the first time, it has no knowledge of the current state of the database. Before streaming WAL changes, it needs to establish a baseline. This is the snapshot. Without it consumers would only see changes that happen after the connector started, without context of what existed before.</p>
+<p>The goal is a full read of all tracked tables that completes atomically after which the connector transitions seamlessly into streaming mode.</p>
+<h3 id="deliverables">Deliverables</h3>
+<ul>
+<li>Full read of all rows from every tracked table via BEGIN IMMEDIATE</li>
+<li>Each row emitted as a READ event to the ChangeEventQueue</li>
+<li>Offset context initialised with data_version, wal_frame_index, and per-table last_rowid</li>
+<li>Clean transition into streaming mode after snapshot completes</li>
+</ul>
+<p><img src="images/module3-snapshot-flow.png" alt="alt text"></p>
+<h3 id="begin-immediate">BEGIN IMMEDIATE</h3>
+<p>SQLite provides a transaction type called BEGIN IMMEDIATE that acquires a reserved lock on the database at the start of the transaction. This prevents any other connection from writing while the snapshot transaction is open, while still allowing other readers.</p>
+<pre class="hljs"><code><div><span class="hljs-keyword">BEGIN</span> <span class="hljs-keyword">IMMEDIATE</span>;
+  <span class="hljs-comment">-- connector reads all rows here</span>
+  <span class="hljs-comment">-- no other writer can commit during this window</span>
+  <span class="hljs-keyword">SELECT</span> <span class="hljs-keyword">rowid</span>, * <span class="hljs-keyword">FROM</span> orders;
+  <span class="hljs-keyword">SELECT</span> <span class="hljs-keyword">rowid</span>, * <span class="hljs-keyword">FROM</span> products;
+  ...
+<span class="hljs-keyword">COMMIT</span>;
+</div></code></pre>
+<p>This gives the connector a consistent point-in-time view of the entire database for the duration of the snapshot. All reads within this transaction see the same version of the data regardless of how long the snapshot takes.</p>
+<h3 id="why-rowid-must-be-explicit">Why rowid Must Be Explicit</h3>
+<p>The snapshot query uses <code>SELECT rowid, *</code> rather than <code>SELECT *</code>. The rowid is SQLite's internal unique row identifier and is not included in <code>SELECT *</code> by default. It must be explicitly selected as it is used in WAL Parsing Engine.</p>
+<h3 id="offset-initialisation">Offset Initialisation</h3>
+<p>After the snapshot completes we need to populate the offset context so streaming can resume correctly on restart.</p>
+<pre class="hljs"><code><div>{
+  <span class="hljs-attr">"snapshot_completed"</span>: <span class="hljs-literal">true</span>,
+  <span class="hljs-attr">"data_version"</span>: <span class="hljs-number">42</span>,
+  <span class="hljs-attr">"wal_frame_index"</span>: <span class="hljs-number">17</span>,
+  <span class="hljs-attr">"tables"</span>: {
+    <span class="hljs-attr">"orders"</span>:   { <span class="hljs-attr">"last_rowid"</span>: <span class="hljs-number">150</span> },
+    <span class="hljs-attr">"products"</span>: { <span class="hljs-attr">"last_rowid"</span>: <span class="hljs-number">32</span>  }
+  }
+}
+</div></code></pre>
+<p>On restart, if <code>snapshot_completed</code> is true we can skip the snapshot  entirely and streaming resumes from <code>wal_frame_index</code>. . If <code>snapshot_completed</code> is false or absent (for example if the connector crashed mid-snapshot) the snapshot runs again from the beginning.</p>
+<h3 id="implementation-approach">Implementation Approach</h3>
+<p>I will extend <code>RelationalSnapshotChangeEventSource</code> and override the locking and query methods to adapt to SQLite's constraints. The BEGIN IMMEDIATE lock override replaces Postgres-style isolation levels:</p>
+<pre class="hljs"><code><div><span class="hljs-meta">@Override</span>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">lockTablesForSchemaSnapshot</span><span class="hljs-params">()</span> </span>{
+    jdbcConnection.execute(<span class="hljs-string">"BEGIN IMMEDIATE"</span>);
+}
+
+<span class="hljs-meta">@Override</span>
+<span class="hljs-function">String <span class="hljs-title">getSnapshotSelect</span><span class="hljs-params">(TableId tableId)</span> </span>{
+    <span class="hljs-keyword">return</span> <span class="hljs-string">"SELECT rowid, * FROM "</span> + tableId.table();
+}
+</div></code></pre>
+<p>On restart, the offset loader checks <code>snapshot_completed</code> before deciding whether to snapshot or stream:</p>
+<pre class="hljs"><code><div><span class="hljs-keyword">if</span> (previousOffset != <span class="hljs-keyword">null</span> &amp;&amp; previousOffset.isSnapshotCompleted()) {
+    <span class="hljs-comment">// skip snapshot, resume streaming from stored wal_frame_index</span>
+    startStreaming(previousOffset.getWalFrameIndex());
+} <span class="hljs-keyword">else</span> {
+    <span class="hljs-comment">// run snapshot from scratch</span>
+    runSnapshot();
+}
+</div></code></pre>
+<h2 id="module-4---wal-parsing-engine">Module 4 - WAL Parsing Engine</h2>
+<h3 id="preface-and-goal">Preface and Goal</h3>
+<p>This module contains the core technical contribution of the connector. Every Debezium connector receives change events from the database through a structured network protocol. In SQLite the only source of change information is the WAL file (a binary file of raw database page images with no row-level structure).</p>
+<p>The goal of this module is to extract row-level INSERT, UPDATE, and DELETE events with correct before and after values directly from the raw WAL binary without issuing any additional queries to the database.</p>
+<h3 id="deliverables">Deliverables</h3>
+<ul>
+<li>Parse WAL file header and frame headers from raw binary.</li>
+<li>Group WAL frames into committed transactions using the commit marker.</li>
+<li>Decode SQLite B-tree leaf pages: cell pointers, varints, serial types, column values.</li>
+<li>Retrieve old page state from page cache or .db file fallback.</li>
+<li>Diff old and new decoded rows by rowid to produce INSERT/UPDATE/DELETE events with correct before/after values.</li>
+<li>Handle overflow pages for large row payloads.</li>
+</ul>
+<h3 id="wal-file-format">WAL File Format</h3>
+<p>The WAL file is a sequence of frames. Each frame is a fixed-size unit consisting of a 24-byte header followed by one full database page of data (typically 4096 bytes). The file begins with a 32-byte WAL header that establishes the page size and two salt values used to validate frames.</p>
+<p><img src="images/module4-wal-file-format.png" alt="alt text"></p>
+<p>The frame header contains the page number (which database page this frame is a new version of) and a commit size field. A commit size of zero means the frame is part of an in-progress transaction. A non-zero value means this is the last frame of a committed transaction. Everything from the previous commit marker up to and including this frame forms one atomic unit. The connector only processes complete committed transactions, never partial ones.</p>
+<h3 id="getting-old-and-new-pages">Getting Old and New Pages</h3>
+<p>To produce before/after row values, the connector needs the state before the transaction and the state after.The new state is always the current WAL frame. The old state comes from one of two places:</p>
+<ol>
+<li>Page modified for first time: Get the old state from .db file at offset <code>(pageNumber - 1) × pageSize</code>.</li>
+<li>Page modified again (already in WAL): Get old state from previous WAL frame for that page (from page cache)</li>
+</ol>
+<p>The connector maintains a page cache <code>Map&lt;pageNumber, lastFrameData</code>  which is its in-memory record of what each page looked like after the last transaction it processed. It is updated after every transaction and provides an O(1) lookup for the old state of any subsequent write to the same page. Without this cache, the connector would need to scan the entire WAL file from the beginning on every change to find the previous version of a page.</p>
+<h3 id="decoding-a-page">Decoding a Page</h3>
+<p>A WAL frame's page data is a raw SQLite B-tree page. For CDC purposes, only table leaf pages are relevant which can be identified by the first byte of the page being <code>0x0D</code>. Interior pages <code>(0x05)</code> are structural index nodes with no row data and are skipped.</p>
+<p><img src="images/module4-page-structure.png" alt="alt text"></p>
+<p>A leaf page contains a cell pointer array near the top which is a list of 2-byte offsets pointing to where each cell (row) starts within the page. Each cell in a page encodes one row using SQLite's record format.
+The following image gives a detailed structure of a cell.</p>
+<p><img src="images/module4-cell-record-format.png" alt="alt text"></p>
+<p>The record header in a cell contains serial types. Serial types in the record header tell the decoder what type each column value is and how many bytes it occupies in the body. The decoder reads the header first to collect all serial types, then reads the body values in order. For example, serial type 1 means a 1-byte signed integer, serial type 7 means an 8-byte IEEE 754 float, and odd values ≥ 13 mean UTF-8 text with length (N-13)/2. The decoder reads all serial types from the header first, then reads the body values in order using those sizes.</p>
+<h3 id="overflow-pages">Overflow Pages</h3>
+<p>When a row's payload exceeds roughly 1/4 of the page size, SQLite stores the overflow in overflow pages. The cell on the leaf page contains only the first portion of the record and a 4-byte pointer to the first overflow page. Each overflow page begins with a 4-byte pointer to the next, followed by continuation data. The decoder follows this chain, reading each overflow page from the WAL frame map or .db file, until the full record is reassembled.</p>
+<h3 id="diffing-old-and-new-pages">Diffing Old and New Pages</h3>
+<p><img src="images/module4-old-and-new-diff.png" alt="alt text">
+Once both old and new pages are decoded into maps of <code>rowid → column values</code>, the diff is straightforward:</p>
+<ol>
+<li>rowid in new only: INSERT  (before = null,  after = new row)</li>
+<li>rowid in old only: DELETE  (before = old row, after = null)</li>
+<li>rowid in both, values differ: UPDATE (before = old row, after = new row)</li>
+<li>rowid in both, values same: no event</li>
+</ol>
+<p>This produces the complete before/after change events that the Debezium framework expects.</p>
+<h3 id="implementation-approach">Implementation Approach</h3>
+<p>The WAL reader opens the .db-wal file as a <code>FileChannel</code> and reads the WAL header once to extract page size and salt values. It then reads frame headers sequentially, validating salts and accumulating frames until a non-zero commit size signals the end of a transaction:</p>
+<pre class="hljs"><code><div>ByteBuffer walHeader = readBytes(walChannel, <span class="hljs-number">0</span>, <span class="hljs-number">32</span>);
+<span class="hljs-keyword">int</span> pageSize = walHeader.getInt(<span class="hljs-number">8</span>);
+<span class="hljs-keyword">int</span> salt1    = walHeader.getInt(<span class="hljs-number">16</span>);
+<span class="hljs-keyword">int</span> salt2    = walHeader.getInt(<span class="hljs-number">20</span>);
+
+List&lt;WalFrame&gt; currentTxn = <span class="hljs-keyword">new</span> ArrayList&lt;&gt;();
+<span class="hljs-keyword">while</span> (hasMoreFrames()) {
+    WalFrame frame = readFrame(offset);
+    <span class="hljs-keyword">if</span> (frame.salt1 != salt1) { handleWalReset(); <span class="hljs-keyword">break</span>; }
+    currentTxn.add(frame);
+    <span class="hljs-keyword">if</span> (frame.commitSize &gt; <span class="hljs-number">0</span>) {
+        processTransaction(currentTxn);
+        currentTxn.clear();
+    }
+}
+</div></code></pre>
+<p>The page decoder checks the page type byte, iterates the cell pointer array, and for each cell parses payload size, rowid, serial types, and values using the varint decoder:</p>
+<pre class="hljs"><code><div>Map&lt;Long, Map&lt;String, Object&gt;&gt; decodePage(<span class="hljs-keyword">byte</span>[] pageData, TableMetadata schema) {
+    <span class="hljs-keyword">if</span> (pageData[<span class="hljs-number">0</span>] != <span class="hljs-number">0x0D</span>) <span class="hljs-keyword">return</span> Map.of(); <span class="hljs-comment">// not a leaf page</span>
+
+    <span class="hljs-keyword">int</span> cellCount = readShort(pageData, <span class="hljs-number">3</span>);
+    Map&lt;Long, Map&lt;String, Object&gt;&gt; rows = <span class="hljs-keyword">new</span> LinkedHashMap&lt;&gt;();
+
+    <span class="hljs-keyword">for</span> (<span class="hljs-keyword">int</span> i = <span class="hljs-number">0</span>; i &lt; cellCount; i++) {
+        <span class="hljs-keyword">int</span> cellOffset  = readShort(pageData, <span class="hljs-number">8</span> + i * <span class="hljs-number">2</span>);
+        <span class="hljs-keyword">long</span> payloadSize = readVarint(pageData, cellOffset);
+        <span class="hljs-keyword">long</span> rowid       = readVarint(pageData, cellOffset + varintSize(payloadSize));
+        Map&lt;String, Object&gt; values = decodeRecord(pageData, cellOffset, rowid, schema);
+        rows.put(rowid, values);
+    }
+    <span class="hljs-keyword">return</span> rows;
+}
+</div></code></pre>
+<p>The WAL differ retrieves the old page state from the page cache or .db file, calls the page decoder on both, and diffs by rowid:</p>
+<pre class="hljs"><code><div><span class="hljs-keyword">byte</span>[] oldPage = pageCache.containsKey(pageNumber)
+    ? pageCache.get(pageNumber)
+    : readFromDbFile(pageNumber);
+
+Map&lt;Long, Map&lt;String, Object&gt;&gt; oldRows = decodePage(oldPage, schema);
+Map&lt;Long, Map&lt;String, Object&gt;&gt; newRows = decodePage(newPage, schema);
+
+<span class="hljs-keyword">for</span> (<span class="hljs-keyword">long</span> rowid : union(oldRows.keySet(), newRows.keySet())) {
+    <span class="hljs-keyword">if</span> (!oldRows.containsKey(rowid))                  emitInsert(newRows.get(rowid));
+    <span class="hljs-keyword">else</span> <span class="hljs-keyword">if</span> (!newRows.containsKey(rowid))             emitDelete(oldRows.get(rowid));
+    <span class="hljs-keyword">else</span> <span class="hljs-keyword">if</span> (!oldRows.get(rowid).equals(newRows.get(rowid))) emitUpdate(oldRows.get(rowid), newRows.get(rowid));
+}
+pageCache.put(pageNumber, newPage);
+</div></code></pre>
+<h2 id="module-5---streaming">Module 5 - Streaming</h2>
+<h3 id="preface--goal">Preface &amp; Goal</h3>
+<p>The WAL parsing engine decoded WAL pages and produced change events. This module is about the layer that drives that engine continuously, that is detecting when changes happen, triggering the WAL parsing cycle, managing the checkpoint lifecycle to keep the page cache consistent, and wiring everything into the Debezium framework so events can reach Kafka.</p>
+<p>The goal is a continuous streaming loop that processes every committed SQLite transaction as a stream of Debezium change events and controls checkpointing safely.</p>
+<h3 id="deliverables">Deliverables</h3>
+<ul>
+<li>WatchService monitoring <code>.db-wal</code> for file modification events</li>
+<li>PRAGMA data_version gate confirming committed writes before parsing</li>
+<li>Full streaming loop driving the WAL parsing engine</li>
+<li>Checkpoint lifecycle</li>
+<li>Correct restart recovery from stored offset (wal_frame_index, data_version)</li>
+<li>An Emitter building Debezium SourceRecord objects with correct before/after Struct values and Avro-compatible naming</li>
+</ul>
+<h3 id="how-changes-are-detected">How changes are detected</h3>
+<p><img src="images/module5-streaming-loop.png" alt="alt text"></p>
+<p>The connector uses a two-layer detection mechanism to know when a committed write has occurred:</p>
+<ol>
+<li>
+<p><strong>Layer 1 - Watch Service:</strong> Java's WatchService API registers the directory containing the .db-wal file for OS-level file modification events. When any process writes to the WAL, the OS notifies the connector immediately.</p>
+</li>
+<li>
+<p><strong>Layer 2 - PRAGMA data_version:</strong> WatchService fires on every write to the WAL file, including mid-transaction writes that are not yet committed. PRAGMA data_version is a SQLite counter that only increments when a transaction fully commits. The connector reads this value after each WatchService event and compares it to the stored value. If it has not changed, the WAL write was not a commit and the connector ignores it and waits for the next event.</p>
+</li>
+</ol>
+<h3 id="the-checkpoint-lifecycle">The Checkpoint Lifecycle</h3>
+<p>The WAL file cannot grow indefinitely and SQLite needs to periodically checkpoint to reclaim space and maintain read performance. But if a checkpoint happens unexpectedly while the connector is reading, the page cache becomes stale. It holds old page states that no longer match what is in the WAL which leads to incorrect before values in change events.</p>
+<p><img src="images/module5-checkpoint-lifecycle.png" alt="alt text"></p>
+<p>The connector prevents this with a three-layer strategy:</p>
+<ul>
+<li>
+<p><strong>Hold BEGIN:</strong> The connector maintains an open read transaction (BEGIN) on a dedicated reader connection. According to the SQLite WAL documentation, a writer will only reset the WAL if no readers are currently using it. Holding BEGIN registers the connector as an active reader, preventing the WAL from being reset while the connector is mid-cycle.</p>
+</li>
+<li>
+<p><strong>WAL hook:</strong> The connector registers a WAL hook via sqlite3_wal_hook() (accessible through the native API of org.xerial:sqlite-jdbc) that fires after every commit. By returning zero from this hook, the connector suppresses all automatic checkpoints on the database entirely regardless of which connection triggers them.</p>
+</li>
+<li>
+<p><strong>Periodic controlled checkpoint:</strong> To prevent the WAL from growing without bound, the connector should perform its own checkpoint at configurable intervals. The connector needs to release BEGIN, run PRAGMA wal_checkpoint(FULL), clear the page cache and re-acquire BEGIN. Because the connector controls the timing, it knows the cache is intentionally stale during this window and rebuilds it cleanly from the updated .db file on the next reads.</p>
+</li>
+</ul>
+<h3 id="building-sourcerecords">Building SourceRecords</h3>
+<p>The change record emitter receives the operation type and before/after column value maps from the WAL differ, builds Kafka Connect Struct objects using the schema from SqliteDatabaseSchema, and wraps them in Debezium's standard change event envelope. Field names and topic names are normalised to Avro-compatible identifiers at this stage. The actual serialisation to Avro or JSON binary format is handled by the Kafka Connect runtime, not by the connector.</p>
+<h3 id="restart-recovery">Restart Recovery</h3>
+<p>Every time a transaction is processed, the connector should update its offset:</p>
+<pre class="hljs"><code><div>{
+  <span class="hljs-attr">"snapshot_completed"</span>: <span class="hljs-literal">true</span>,
+  <span class="hljs-attr">"data_version"</span>: <span class="hljs-number">42</span>,
+  <span class="hljs-attr">"wal_frame_index"</span>: <span class="hljs-number">17</span>,
+  <span class="hljs-attr">"tables"</span>: {
+    <span class="hljs-attr">"orders"</span>: { <span class="hljs-attr">"last_rowid"</span>: <span class="hljs-number">150</span> }
+  }
+}
+</div></code></pre>
+<p>On restart, the connector reads this offset from Kafka Connect.</p>
+<ol>
+<li>If data_version matches the current database value, that means nothing changed while the connector was down, resume from wal_frame_index</li>
+<li>If data_version is higher then changes were missed and we need to re-read WAL from wal_frame_index to catch up</li>
+<li>If WAL has been reset (salt mismatch at stored frame index) then perform a new snapshot</li>
+</ol>
+<h3 id="implementation-approach">Implementation Approach</h3>
+<p>The streaming loop implements StreamingChangeEventSource following the same contract as the Postgres connector. The WatchService drives the loop, gated by data_version:</p>
+<pre class="hljs"><code><div><span class="hljs-keyword">while</span> (context.isRunning()) {
+    WatchKey key = watcher.poll(pollInterval, MILLISECONDS);
+    <span class="hljs-keyword">if</span> (key != <span class="hljs-keyword">null</span>) {
+        <span class="hljs-keyword">long</span> currentVersion = readDataVersion();
+        <span class="hljs-keyword">if</span> (currentVersion != lastDataVersion) {
+            processWalCycle();
+            lastDataVersion = currentVersion;
+        }
+        key.reset();
+    }
+}
+</div></code></pre>
+<p>The checkpoint lifecycle uses a dedicated reader connection holding BEGIN and a WAL hook registered via sqlite-jdbc's native API:</p>
+<pre class="hljs"><code><div><span class="hljs-comment">// suppress all automatic checkpoints</span>
+SQLiteConnection nativeConn = readerConn.unwrap(SQLiteConnection<span class="hljs-class">.<span class="hljs-keyword">class</span>)</span>;
+nativeConn.getDatabase().register_wal_hook((db, dbName, pages) -&gt; <span class="hljs-number">0</span>);
+
+<span class="hljs-comment">// periodic controlled checkpoint</span>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">performControlledCheckpoint</span><span class="hljs-params">()</span> </span>{
+    readerConn.execute(<span class="hljs-string">"COMMIT"</span>);                     <span class="hljs-comment">// release reader lock</span>
+    jdbcConn.execute(<span class="hljs-string">"PRAGMA wal_checkpoint(FULL)"</span>);  <span class="hljs-comment">// checkpoint</span>
+    pageCache.clear();                                <span class="hljs-comment">// intentional cache clear</span>
+    readerConn.execute(<span class="hljs-string">"BEGIN"</span>);                      <span class="hljs-comment">// re-acquire reader lock</span>
+}
+</div></code></pre>
+<p>The change record emitter builds a SourceRecord using the before/after maps from the WAL differ:</p>
+<pre class="hljs"><code><div><span class="hljs-function">SourceRecord <span class="hljs-title">buildRecord</span><span class="hljs-params">(Operation op, Map&lt;String, Object&gt; before, Map&lt;String, Object&gt; after, TableMetadata schema)</span> </span>{
+    Struct beforeStruct = before != <span class="hljs-keyword">null</span> ? toStruct(before, schema) : <span class="hljs-keyword">null</span>;
+    Struct afterStruct  = after  != <span class="hljs-keyword">null</span> ? toStruct(after,  schema) : <span class="hljs-keyword">null</span>;
+    Struct envelope     = schema.getEnvelopeSchema().create(beforeStruct, afterStruct, sourceInfo);
+    <span class="hljs-keyword">return</span> <span class="hljs-keyword">new</span> SourceRecord(partition, offset, topic, envelope.schema(), envelope);
+}
+</div></code></pre>
+<h2 id="module-6--testing--documentation">Module 6 — Testing &amp; Documentation</h2>
+<h3 id="preface--goal">Preface &amp; Goal</h3>
+<p>The connector is only good if it works in every scenario. The WAL parsing engine involves low-level binary decoding with several subtle edge cases like overflow pages, checkpoint boundaries, salt validation. This module builds the confidence through targeted unit tests on the parsing layer and end-to-end integration tests across every scenario the connector is expected to handle.</p>
+<h3 id="deliverables">Deliverables</h3>
+<ul>
+<li>Unit tests for each WAL parsing class with known binary inputs and expected outputs</li>
+<li>Integration tests covering all major CDC scenarios end-to-end</li>
+<li>README with setup instructions, config reference, and deployment guide</li>
+<li>Documentation of known limitations</li>
+</ul>
+<h2 id="known-limitations">Known Limitations</h2>
+<p>The following limitations are inherent to SQLite's architecture or to the scope of this project. They are documented explicitly rather than treated as bugs to be fixed later.</p>
+<table>
+<thead>
+<tr>
+<th>Limitation</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Co-located deployment only</td>
+<td>SQLite has no network protocol — the connector reads the <code>.db</code> file directly via <code>FileChannel</code> and must run on the same machine</td>
+</tr>
+<tr>
+<td>WAL mode required</td>
+<td>Rollback journal mode deletes change history on every commit — there is nothing to read for CDC</td>
+</tr>
+<tr>
+<td>SQLite ≥ 3.51.3 recommended</td>
+<td>Earlier versions have a WAL reset bug that can cause data corruption under concurrent checkpoint conditions, fixed in March 2026</td>
+</tr>
+<tr>
+<td>Application connections should also set <code>wal_autocheckpoint=0</code></td>
+<td>The WAL hook suppresses checkpoints on the database level, but documenting this for application connections provides an additional safety layer</td>
+</tr>
+<tr>
+<td><code>WITHOUT ROWID</code> and overflow pages handled in Phase 2</td>
+<td>These are valid SQLite features and will be supported, but the iterative approach recommended by mentors prioritises common cases first</td>
+</tr>
+</tbody>
+</table>
+<h1 id="roadmap">Roadmap</h1>
+<p>GSoC 2026 allocates approximately 350 hours for a large project over 12 coding weeks. I plan to commit a minimum of <strong>30 hours per week</strong> throughout the coding period.</p>
+<h2 id="phase-1">Phase 1</h2>
+<h3 id="community-bonding">Community Bonding</h3>
+<p>Before coding starts I plan to:</p>
+<ul>
+<li>Set up the full Debezium development environment and confirm the build works end to end</li>
+<li>Study the Postgres connector source code in depth — specifically the connector task, streaming source, change record emitter, and offset context — as these are the direct reference implementations for the SQLite connector</li>
+<li>Read the official SQLite WAL documentation and file format specification in detail.</li>
+<li>Discuss and finalise the detailed design with mentors, particularly the WAL hook API access via <code>sqlite-jdbc</code>, the <code>WITHOUT ROWID</code> handling approach, and overflow page scope for Phase 1.</li>
+</ul>
+<hr>
+<h3 id="week-1-project-skeleton">Week 1: Project Skeleton</h3>
+<ul>
+<li>Set up Maven project with correct Debezium BOM, sqlite-jdbc, and Kafka Connect dependencies</li>
+<li>Implement the connector entry point.</li>
+<li>Implement a JDBC connection wrapper that enforces WAL mode on startup and disables auto-checkpoint.</li>
+<li>Implement error handling.</li>
+<li>Connector JAR builds, connects to a SQLite file, and enforces WAL mode.</li>
+</ul>
+<hr>
+<h3 id="week-2-schema-handling">Week 2: Schema Handling</h3>
+<ul>
+<li>Implement a schema registry that reads all table definitions dynamically from sqlite_master.</li>
+<li>Build and maintain a root page number to table name map so the WAL parsing engine can immediately identify which table a given WAL frame belongs to</li>
+<li>Implement type affinity mapping from SQLite's five affinities to Kafka Connect schema types</li>
+</ul>
+<hr>
+<h3 id="week-3-initial-snapshot">Week 3: Initial Snapshot</h3>
+<ul>
+<li>Implement the snapshot phase using <code>BEGIN IMMEDIATE</code> to acquire an exclusive writer lock and get the initial state.</li>
+<li>Implement an offset context that stores <code>snapshot_completed</code>, <code>data_version</code>, <code>wal_frame_index</code>, and per-table <code>last_rowid</code></li>
+<li>Wire the connector task's <code>start()</code>, <code>poll()</code>, and <code>stop()</code> lifecycle together end to end</li>
+<li>Integration test: snapshot produces correct <code>READ</code> events for all rows</li>
+</ul>
+<hr>
+<h3 id="week-4-varint-decoder--page-decoder">Week 4: Varint Decoder &amp; Page Decoder</h3>
+<ul>
+<li>Implement a varint decoder for SQLite's variable-length integer encoding.</li>
+<li>Implement a page decoder that checks the page type byte (<code>0x0D</code> for table leaf), reads the cell pointer array, and for each cell parses required details.</li>
+<li>Handle all serial type categories: NULL, integers of varying widths, float64, integer constants, TEXT, and BLOB</li>
+<li>Unit tests using real WAL binary snapshots captured from the Python prototype</li>
+</ul>
+<hr>
+<h3 id="week-5-wal-reader--differ">Week 5: WAL Reader &amp; Differ</h3>
+<ul>
+<li>Implement a WAL reader that opens <code>.db-wal</code> as a <code>FileChannel</code>, parses the 32-byte WAL header to extract page size and salt values, reads frame headers sequentially, validates salts, and groups frames into committed transactions using the commit marker.</li>
+<li>Implement a WAL differ that retrieves old page state from the page cache or the database file as a fallback, calls the page decoder on both old and new pages, diffs decoded rows by rowid, and produces INSERT/UPDATE/DELETE change events with correct before/after values.</li>
+<li>Unit tests: INSERT/UPDATE/DELETE detection from known old/new page pairs</li>
+</ul>
+<hr>
+<h2 id="phase-2-midterm">Phase 2: Midterm</h2>
+<p>At this point we have snapshot working end to end, WAL parsing engine fully unit tested, basic streaming working for simple tables. Remaining work is streaming orchestration.</p>
+<hr>
+<h3 id="week-6-streaming-loop">Week 6: Streaming Loop</h3>
+<ul>
+<li>Implement the main streaming loop: <code>WatchService</code> on the <code>.db-wal</code> directory for OS-level file modification events.</li>
+<li>Implement a change record emitter that builds Debezium <code>SourceRecord</code> objects with before/after <code>Struct</code> values and Avro-compatible field and topic naming.</li>
+<li>Update the offset after every transaction with the latest <code>data_version</code> and <code>wal_frame_index</code></li>
+<li>Integration test: INSERT/UPDATE/DELETE each produce correct <code>SourceRecord</code> with before/after values</li>
+</ul>
+<hr>
+<h3 id="week-7-checkpoint-lifecycle">Week 7: Checkpoint Lifecycle</h3>
+<ul>
+<li>Hold <code>BEGIN</code> on a dedicated reader connection to prevent WAL reset mid-cycle</li>
+<li>Register a WAL hook via <code>sqlite3_wal_hook()</code> through the <code>sqlite-jdbc</code> native API to suppress all automatic checkpoints regardless of which connection triggers them</li>
+<li>Implement periodic controlled checkpoint</li>
+<li>Expose a config field to control checkpoint frequency</li>
+<li>Integration test: connector produces correct before/after values across a controlled checkpoint</li>
+</ul>
+<hr>
+<h3 id="week-8-restart-recovery--schema-changes">Week 8: Restart Recovery &amp; Schema Changes</h3>
+<ul>
+<li>Implement restart recovery.</li>
+<li>Implement schema change handling.</li>
+<li>Integration tests: restart with no missed events. Handle `ALTER TABLE without connector restart</li>
+</ul>
+<hr>
+<h3 id="week-9-overflow-pages--without-rowid">Week 9: Overflow Pages &amp; WITHOUT ROWID</h3>
+<ul>
+<li>Implement overflow page chain following in the page decoder and detect when a cell's payload exceeds the inline threshold.</li>
+<li>Implement <code>WITHOUT ROWID</code> table handling.</li>
+<li>Integration tests: large row payloads decoded correctly, <code>WITHOUT ROWID</code> table changes captured</li>
+</ul>
+<hr>
+<h3 id="week-10-integration-testing--bug-fixes">Week 10: Integration Testing &amp; Bug Fixes</h3>
+<ul>
+<li>Full integration test suite: snapshot, streaming, restart, schema change, checkpoint, overflow pages, multi-table, <code>WITHOUT ROWID</code></li>
+<li>Fix any bugs surfaced by integration tests</li>
+<li>Stress test: high write throughput, WAL growing large, checkpoint under load.</li>
+<li>Verify offset correctness under all restart scenarios.</li>
+</ul>
+<hr>
+<h3 id="week-11-polish--code-review-preparation">Week 11: Polish &amp; Code Review Preparation</h3>
+<ul>
+<li>Dedicated week for code quality, addressing mentor review feedback, and preparing the final writeup. No new features, the main focus is on making the existing code production-ready and ensuring the project is in a state that can be submitted and maintained by the community.</li>
+</ul>
+<hr>
+<h3 id="final-week-documentation--submission">Final Week: Documentation &amp; Submission</h3>
+<ul>
+<li>Complete README: prerequisites, quick start, full configuration reference, deployment guide for both Kafka Connect and Embedded Engine</li>
+<li>Document known limitations</li>
+<li>Final code submission to the Debezium organisation</li>
+<li>Final report written and submitted via the GSoC website</li>
+</ul>
+<h2 id="other-commitments">Other commitments</h2>
+<p>I am a full-time student at the Indian Institute of Information Technology. I currently have a part-time internship which will conclude before the GSoC coding period begins and will not overlap with any development work.</p>
+<p>I also have a Bachelor's Thesis Project (BTP) running through the summer, expected to wrap up by end of June. However, this period coincides with my college vacations from May to mid-July, so I will have full availability for GSoC without any conflict.</p>
+<p>From May to mid-July I am on college vacation, which means no classes and maximum flexibility outside of the BTP. From mid-July onwards, classes resume from 10am to 4pm, after which I am completely free. The bulk of the complex work — streaming orchestration, checkpoint lifecycle, edge cases, and integration testing (Weeks 6-10) — falls in this period, and the post-4pm availability is more than sufficient to maintain full GSoC pace for those weeks.</p>
+<p>I am committed to communicating proactively with my mentors if anything changes, and to maintaining consistent weekly updates regardless of workload elsewhere.</p>
+<h2 id="post-gsoc-commitments">Post GSOC Commitments</h2>
+<p>I intend to remain an active contributor to the Debezium project beyond the GSoC period. The SQLite connector will be in a functional state by the end of GSoC, but like any new connector there will be follow-up work. I will stay engaged and continue improving the connector.</p>
+<h1 id="references">References</h1>
+<ul>
+<li><a href="https://www.sqlite.org/wal.html">SQLite WAL documentation</a></li>
+<li><a href="https://www.sqlite.org/fileformat2.html">SQLite file format specification</a></li>
+<li><a href="https://www.sqlite.org/pragma.html">SQLite PRAGMA reference</a></li>
+<li><a href="https://debezium.io/documentation/reference/stable/development/engine.html">Debezium connector development guide</a></li>
+<li><a href="https://github.com/debezium/debezium/tree/main/debezium-connector-postgres">Debezium Postgres connector: reference implementation</a></li>
+<li><a href="https://debezium.zulipchat.com/#narrow/channel/573881-community-gsoc/topic/Siddhant.20-.20SQLite.20connector/with/582273764">Mentor discussion on Zulip</a></li>
+<li><a href="https://www.sqlite.org/wal.html#the_wal_reset_bug">SQLite WAL reset bug — fixed in 3.51.3</a></li>
+</ul>
+
+</body>
+</html>
