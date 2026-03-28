@@ -160,7 +160,7 @@ The main goal of this module is to dynamically get the schema of any SQLite data
 - Detects WITHOUT ROWID tables and extracts their composite primary key
 - Detects schema changes during streaming via PRAGMA schema_version
 
-### Description
+###   `sqlite_master`: SQLite's Schema Store
 
 Unlike PostgreSQL or MySQL, SQLite stores the raw CREATE TABLE SQL string in a special table called `sqlite_master`. To know the schema of a table, we need to read this SQL string and parse it on our own.
 
@@ -170,14 +170,27 @@ SELECT name, sql FROM sqlite_master WHERE type = 'table';
 -- name: "orders"
 -- sql:  "CREATE TABLE orders (id INTEGER PRIMARY KEY, item TEXT, amount REAL)"
 ```
-We just need to parse the sql string to get the schema of the table.
 
-We also have to maintain a map that keeps a relation between pages of the database and which table are they associated with. When a WAL frame arrives, the connector knows the page number that changed but not which table it belongs to. By maintaining a rootpage to table name map the connector can immediately identify which table a WAL frame is modifying.
+To know the schema of a table, the connector reads this SQL string and parses it, extracting column names, declared types, and constraints. This is different from other connectors which can query a structured catalog directly.
 
+### The Rowid Alias
+When a column is declared `INTEGER PRIMARY KEY`, SQLite makes it an alias for the table's internal rowid and omits it from the record body entirely. If the connector does not account for this, it reads NULL for that column. The schema registry should flag such columns during parsing so the WAL page decoder knows to substitute the rowid value rather than reading from the record body.
+
+### Root Page Mapping
+The `rootpage` value tells the connector which page number in the .db file is the root of that table's B-tree. When a WAL frame arrives, the connector knows the page number that changed but not which table it belongs to. So we need to maintain a root page to table name map built from sqlite_master to identify which table a WAL frame is modifying.
+
+### Schema Change Detection
+SQLite increments PRAGMA schema_version on every DDL operation. The connector can poll this value each streaming cycle. When it changes, SqliteDatabaseSchema re-reads sqlite_master, rebuilds the column map, and emits a schema change event.
+
+### Rough Structure of Schema Handling Module
 ![alt text](images/module2.png)
 
-`SqliteValueConverter` handles the affinity-to-Kafka-Connect type mapping.SQLite uses five type affinities rather than strict types. The connector maps these to Kafka Connect schema types:
+`SqliteDatabaseSchema` is the single entry point for all schema information in the connector. 
+It reads from `sqlite_master` which produces two outputs: a table to columns map (storing column names, types, rowid-alias flags, and primary key information for each table) and a rootpage to table map (which tells the WAL parsing engine which table a given page number belongs to).
 
+It uses `SqliteValueConverter` to handle the mapping from SQLite's type affinities to Kafka Connect schema types, keeping type conversion logic separate from schema introspection logic. The third responsibility of  `SqliteDatabaseSchema` is polling `PRAGMA schema_version` each cycle and triggering a full re-read of `sqlite_master` when it changes.
+
+**The following table represents the SQLite Affinity to Kafka Connect Type mapping:**
 | SQLite Affinity  | Kafka Connect Type |
 |--------|--------|
 | INTEGER   | INT64 |
@@ -186,8 +199,34 @@ We also have to maintain a map that keeps a relation between pages of the databa
 | BLOB | BYTES |
 | NUMERIC | FLOAT64/ INT64 |
 
-### Schema Change Detection
-SQLite increments PRAGMA schema_version on every DDL operation. The connector can poll this value each streaming cycle. When it changes, SqliteDatabaseSchema re-reads sqlite_master, rebuilds the column map, and emits a schema change event.
+
+### Implementation Approach
+
+At startup, `SqliteDatabaseSchema` queries sqlite_master for all tables and builds both maps in a single pass.  The SQL parser extracts column definitions from the CREATE TABLE statement. For each column it reads the name, determines the SQLite type affinity from the declared type keyword, and checks for `PRIMARY KEY` and `INTEGER PRIMARY KEY` (rowid alias):
+
+```java
+SqliteColumn parseColumn(String definition) {
+    String columnName   = extractName(definition);
+    String declaredType = extractType(definition);
+    String affinity     = resolveAffinity(declaredType); // INTEGER, REAL, TEXT, BLOB, NUMERIC
+
+    boolean isPrimaryKey  = definition.contains("PRIMARY KEY");
+    boolean isRowidAlias  = affinity.equals("INTEGER") && isPrimaryKey;
+    // isRowidAlias tells page decoder to use rowid value, not record body
+
+    return new SqliteColumn(columnName, affinity, isPrimaryKey, isRowidAlias);
+}
+```
+For schema change detection, `PRAGMA schema_version` is polled on each streaming cycle. A change triggers a full re-introspection and a schema change event:
+```java
+long currentVersion = readSchemaVersion();
+
+if (currentVersion != cachedSchemaVersion) {
+    refreshFromSqliteMaster();
+    emitSchemaChangeEvent();
+    cachedSchemaVersion = currentVersion;
+}
+```
 
 ## Module 3 - Initial Snapshot
 
@@ -221,6 +260,9 @@ COMMIT;
 
 This gives the connector a consistent point-in-time view of the entire database for the duration of the snapshot. All reads within this transaction see the same version of the data regardless of how long the snapshot takes.
 
+### Why rowid Must Be Explicit
+The snapshot query uses `SELECT rowid, *` rather than `SELECT *`. The rowid is SQLite's internal unique row identifier and is not included in `SELECT *` by default. It must be explicitly selected as it is used in WAL Parsing Engine.
+
 ### Offset Initialisation
 After the snapshot completes we need to populate the offset context so streaming can resume correctly on restart.
 ```json
@@ -235,10 +277,33 @@ After the snapshot completes we need to populate the offset context so streaming
 }
 ```
 
-On restart, if snapshot_completed is true we can skip the snapshot  entirely and streaming resumes from wal_frame_index.
+On restart, if `snapshot_completed` is true we can skip the snapshot  entirely and streaming resumes from `wal_frame_index`. . If `snapshot_completed` is false or absent (for example if the connector crashed mid-snapshot) the snapshot runs again from the beginning.
 
-### Why rowid Must Be Explicit
-The snapshot query uses `SELECT rowid, *` rather than `SELECT *`. The rowid is SQLite's internal unique row identifier and is not included in `SELECT *` by default. It must be explicitly selected as it is used in WAL Parsing Engine.
+### Implementation Approach
+I will extend `RelationalSnapshotChangeEventSource` and override the locking and query methods to adapt to SQLite's constraints. The BEGIN IMMEDIATE lock override replaces Postgres-style isolation levels:
+
+```java
+@Override
+void lockTablesForSchemaSnapshot() {
+    jdbcConnection.execute("BEGIN IMMEDIATE");
+}
+
+@Override
+String getSnapshotSelect(TableId tableId) {
+    return "SELECT rowid, * FROM " + tableId.table();
+}
+```
+On restart, the offset loader checks `snapshot_completed` before deciding whether to snapshot or stream:
+
+```java
+if (previousOffset != null && previousOffset.isSnapshotCompleted()) {
+    // skip snapshot, resume streaming from stored wal_frame_index
+    startStreaming(previousOffset.getWalFrameIndex());
+} else {
+    // run snapshot from scratch
+    runSnapshot();
+}
+```
 
 ## Module 4 - WAL Parsing Engine 
 ### Preface and Goal
@@ -264,7 +329,7 @@ The frame header contains the page number (which database page this frame is a n
 
 ### Getting Old and New Pages
 To produce before/after row values, the connector needs the state before the transaction and the state after.The new state is always the current WAL frame. The old state comes from one of two places:
-1. Page modified for first time: Get the old state from from .db file at offset (pageNumber - 1) × pageSize.
+1. Page modified for first time: Get the old state from .db file at offset `(pageNumber - 1) × pageSize`.
 2. Page modified again (already in WAL): Get old state from previous WAL frame for that page (from page cache)
 
 The connector maintains a page cache `Map<pageNumber, lastFrameData`  which is its in-memory record of what each page looked like after the last transaction it processed. It is updated after every transaction and provides an O(1) lookup for the old state of any subsequent write to the same page. Without this cache, the connector would need to scan the entire WAL file from the beginning on every change to find the previous version of a page.
@@ -279,9 +344,7 @@ The following image gives a detailed structure of a cell.
 
 ![alt text](images/module4-cell-record-format.png)
 
-The record header in a cell contains serial types. Serial types in the record header tell the decoder what type each column value is and how many bytes it occupies in the body. The decoder reads the header first to collect all serial types, then reads the body values in order.the header says the first column is Type 1 (1 byte) and the second is Type 13 (0 bytes, empty string), the decoder reads 1 byte for the first value and moves the pointer 0 bytes for the second.
-
-Now that we know, the detailed structure of a page and a cell, it becomes easy to decode and get the data in any row of a page.
+The record header in a cell contains serial types. Serial types in the record header tell the decoder what type each column value is and how many bytes it occupies in the body. The decoder reads the header first to collect all serial types, then reads the body values in order. For example, serial type 1 means a 1-byte signed integer, serial type 7 means an 8-byte IEEE 754 float, and odd values ≥ 13 mean UTF-8 text with length (N-13)/2. The decoder reads all serial types from the header first, then reads the body values in order using those sizes.
 
 ### Overflow Pages
 When a row's payload exceeds roughly 1/4 of the page size, SQLite stores the overflow in overflow pages. The cell on the leaf page contains only the first portion of the record and a 4-byte pointer to the first overflow page. Each overflow page begins with a 4-byte pointer to the next, followed by continuation data. The decoder follows this chain, reading each overflow page from the WAL frame map or .db file, until the full record is reassembled.
@@ -295,6 +358,65 @@ Once both old and new pages are decoded into maps of `rowid → column values`, 
 4. rowid in both, values same: no event
 
 This produces the complete before/after change events that the Debezium framework expects.
+
+### Implementation Approach
+The WAL reader opens the .db-wal file as a `FileChannel` and reads the WAL header once to extract page size and salt values. It then reads frame headers sequentially, validating salts and accumulating frames until a non-zero commit size signals the end of a transaction:
+
+```java
+ByteBuffer walHeader = readBytes(walChannel, 0, 32);
+int pageSize = walHeader.getInt(8);
+int salt1    = walHeader.getInt(16);
+int salt2    = walHeader.getInt(20);
+
+List<WalFrame> currentTxn = new ArrayList<>();
+while (hasMoreFrames()) {
+    WalFrame frame = readFrame(offset);
+    if (frame.salt1 != salt1) { handleWalReset(); break; }
+    currentTxn.add(frame);
+    if (frame.commitSize > 0) {
+        processTransaction(currentTxn);
+        currentTxn.clear();
+    }
+}
+```
+
+The page decoder checks the page type byte, iterates the cell pointer array, and for each cell parses payload size, rowid, serial types, and values using the varint decoder:
+
+```java
+Map<Long, Map<String, Object>> decodePage(byte[] pageData, TableMetadata schema) {
+    if (pageData[0] != 0x0D) return Map.of(); // not a leaf page
+
+    int cellCount = readShort(pageData, 3);
+    Map<Long, Map<String, Object>> rows = new LinkedHashMap<>();
+
+    for (int i = 0; i < cellCount; i++) {
+        int cellOffset  = readShort(pageData, 8 + i * 2);
+        long payloadSize = readVarint(pageData, cellOffset);
+        long rowid       = readVarint(pageData, cellOffset + varintSize(payloadSize));
+        Map<String, Object> values = decodeRecord(pageData, cellOffset, rowid, schema);
+        rows.put(rowid, values);
+    }
+    return rows;
+}
+```
+
+The WAL differ retrieves the old page state from the page cache or .db file, calls the page decoder on both, and diffs by rowid:
+
+```java
+byte[] oldPage = pageCache.containsKey(pageNumber)
+    ? pageCache.get(pageNumber)
+    : readFromDbFile(pageNumber);
+
+Map<Long, Map<String, Object>> oldRows = decodePage(oldPage, schema);
+Map<Long, Map<String, Object>> newRows = decodePage(newPage, schema);
+
+for (long rowid : union(oldRows.keySet(), newRows.keySet())) {
+    if (!oldRows.containsKey(rowid))                  emitInsert(newRows.get(rowid));
+    else if (!newRows.containsKey(rowid))             emitDelete(oldRows.get(rowid));
+    else if (!oldRows.get(rowid).equals(newRows.get(rowid))) emitUpdate(oldRows.get(rowid), newRows.get(rowid));
+}
+pageCache.put(pageNumber, newPage);
+```
 
 ## Module 5 - Streaming
 
@@ -330,13 +452,16 @@ The WAL file cannot grow indefinitely and SQLite needs to periodically checkpoin
 
 ![alt text](images/module5-checkpoint-lifecycle.png)
 
-We can solve this using this sequence:
+The connector prevents this with a three-layer strategy:
 
 - **Hold BEGIN:** The connector maintains an open read transaction (BEGIN) on a dedicated reader connection. According to the SQLite WAL documentation, a writer will only reset the WAL if no readers are currently using it. Holding BEGIN registers the connector as an active reader, preventing the WAL from being reset while the connector is mid-cycle.
 
 - **WAL hook:** The connector registers a WAL hook via sqlite3_wal_hook() (accessible through the native API of org.xerial:sqlite-jdbc) that fires after every commit. By returning zero from this hook, the connector suppresses all automatic checkpoints on the database entirely regardless of which connection triggers them.
 
 - **Periodic controlled checkpoint:** To prevent the WAL from growing without bound, the connector should perform its own checkpoint at configurable intervals. The connector needs to release BEGIN, run PRAGMA wal_checkpoint(FULL), clear the page cache and re-acquire BEGIN. Because the connector controls the timing, it knows the cache is intentionally stale during this window and rebuilds it cleanly from the updated .db file on the next reads.
+
+### Building SourceRecords
+The change record emitter receives the operation type and before/after column value maps from the WAL differ, builds Kafka Connect Struct objects using the schema from SqliteDatabaseSchema, and wraps them in Debezium's standard change event envelope. Field names and topic names are normalised to Avro-compatible identifiers at this stage. The actual serialisation to Avro or JSON binary format is handled by the Kafka Connect runtime, not by the connector.
 
 ### Restart Recovery
 Every time a transaction is processed, the connector should update its offset:
@@ -355,6 +480,49 @@ On restart, the connector reads this offset from Kafka Connect.
 1. If data_version matches the current database value, that means nothing changed while the connector was down, resume from wal_frame_index
 2. If data_version is higher then changes were missed and we need to re-read WAL from wal_frame_index to catch up
 3. If WAL has been reset (salt mismatch at stored frame index) then perform a new snapshot
+
+### Implementation Approach
+The streaming loop implements StreamingChangeEventSource following the same contract as the Postgres connector. The WatchService drives the loop, gated by data_version:
+
+```java
+while (context.isRunning()) {
+    WatchKey key = watcher.poll(pollInterval, MILLISECONDS);
+    if (key != null) {
+        long currentVersion = readDataVersion();
+        if (currentVersion != lastDataVersion) {
+            processWalCycle();
+            lastDataVersion = currentVersion;
+        }
+        key.reset();
+    }
+}
+```
+
+The checkpoint lifecycle uses a dedicated reader connection holding BEGIN and a WAL hook registered via sqlite-jdbc's native API:
+
+```java
+// suppress all automatic checkpoints
+SQLiteConnection nativeConn = readerConn.unwrap(SQLiteConnection.class);
+nativeConn.getDatabase().register_wal_hook((db, dbName, pages) -> 0);
+
+// periodic controlled checkpoint
+void performControlledCheckpoint() {
+    readerConn.execute("COMMIT");                     // release reader lock
+    jdbcConn.execute("PRAGMA wal_checkpoint(FULL)");  // checkpoint
+    pageCache.clear();                                // intentional cache clear
+    readerConn.execute("BEGIN");                      // re-acquire reader lock
+}
+```
+The change record emitter builds a SourceRecord using the before/after maps from the WAL differ:
+
+```java
+SourceRecord buildRecord(Operation op, Map<String, Object> before, Map<String, Object> after, TableMetadata schema) {
+    Struct beforeStruct = before != null ? toStruct(before, schema) : null;
+    Struct afterStruct  = after  != null ? toStruct(after,  schema) : null;
+    Struct envelope     = schema.getEnvelopeSchema().create(beforeStruct, afterStruct, sourceInfo);
+    return new SourceRecord(partition, offset, topic, envelope.schema(), envelope);
+}
+```
 
 ## Module 6 — Testing & Documentation
 
