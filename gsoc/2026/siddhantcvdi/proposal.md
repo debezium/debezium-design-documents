@@ -9,7 +9,7 @@
    - Email: siddhantcvdi@gmail.com
    - Phone: +91 6372207434
 4. **Time zone:** IST (UTC+5:30)
-5. **Experience:** Software Engineering Intern at TeemCRM | JEE Qualified (Top 1.2%)
+5. **Experience:** Software Engineering Intern at TeemCRM 
 6. [Link to Zulip Introduction](https://debezium.zulipchat.com/#narrow/channel/573881-community-gsoc/topic/newcomers/near/577126130)
 
 ## Code Contributions
