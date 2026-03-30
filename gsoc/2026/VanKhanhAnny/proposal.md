@@ -97,13 +97,15 @@ From the codebase, my current understanding of the deployment flow is:
 
 That flow is helpful because it shows that host-based deployment should be added as another environment path inside the existing model, not as a separate orchestration mechanism.
 
+At the end of that operator path, `OperatorPipelineController.deploy()` maps `PipelineFlat` through `PipelineMapper.map()` into a `DebeziumServer` custom resource and hands it to `DebeziumKubernetesAdapter.deployPipeline(...)`. That is a useful reference point for the host-based design. The new path does not need a different source model. It needs a different renderer and executor at the end of the same Conductor flow.
+
 #### 3. Proposed MVP architecture
 
 My proposed MVP has four main pieces:
 
 1. **Host target model**
    - A first-class representation of a deployable Linux host in Conductor.
-   - The initial model should include at least host address, connection endpoint, authentication reference, runtime capabilities, and deployment path or working directory.
+   - The initial model should include at least host address, connection endpoint, a reference to a mounted SSH key, runtime capabilities, and deployment path or working directory.
 
 2. **Host-based environment implementation**
    - A new host-oriented environment controller and pipeline controller that fit alongside the operator-specific implementation.
@@ -115,7 +117,7 @@ My proposed MVP has four main pieces:
 
 4. **Container-engine deployment flow**
    - Render Debezium Server runtime configuration from the existing pipeline model.
-   - Transfer the rendered configuration to the remote host.
+   - Transfer the rendered runtime bundle to the remote host.
    - Start and manage Debezium Server through a supported container engine.
 
 The Conductor remains the control plane. The host is an execution target, not a second source of truth for configuration.
@@ -127,9 +129,10 @@ The Conductor remains the control plane. The host is an execution target, not a 
 Based on my current reading of the codebase, I expect the first implementation slice to touch these areas:
 
 - `PipelineService`, especially the current `environmentController()` selection logic
-- the `EnvironmentController`, `PipelineController`, and `VaultController` abstractions
+- the `EnvironmentController` and `PipelineController` abstractions
 - `OperatorEnvironmentController` as the closest existing environment implementation to mirror structurally
-- `PipelineResource` and `VaultResource` as examples for the backend API shape
+- `OperatorPipelineController` and `PipelineMapper`, because the host path should mirror their role while producing different runtime artifacts
+- `PipelineResource` as an example for the backend API shape
 - `PipelineConsumer` in the watcher flow, because host deployments should still move through the existing event-driven path rather than a separate orchestration path
 
 #### 3.2 What should stay unchanged
@@ -154,10 +157,22 @@ My expectation is that the MVP needs a host-target registration path in Conducto
 - hostname or IP address
 - connection port
 - username or connection identity
-- credential or secret reference
+- supported runtime or detected runtime capabilities
+- target working directory
+- SSH key reference that points to key material already mounted into Conductor, not stored in Platform entities
 - optional labels or environment metadata
 
 After registration, Conductor should be able to run preflight checks before a pipeline is associated with that host. That association then determines whether deployment uses the operator-backed environment or the host-based environment.
+
+Those preflight checks should validate at least:
+
+- SSH connectivity and remote-user permissions
+- supported Linux family or package-manager assumptions
+- presence of the chosen container engine, or whether it can be bootstrapped
+- working-directory creation and write access
+- ability to pull the Debezium Server image from a registry
+
+For one supported Linux family, I think the MVP can go one step further than validation and include a narrow bootstrap path. If the chosen container engine is missing, Conductor should be able to install it, create the working directory, ensure the service is enabled and running, and verify that the target user can launch a simple test container. Outside that narrow support matrix, the system should fail fast with an actionable preflight error instead of trying to provision every possible host shape.
 
 A simple API shape for that first step could look like:
 
@@ -172,7 +187,9 @@ Content-Type: application/json
   "hostname": "10.0.0.25",
   "port": 22,
   "username": "debezium",
-  "credentialRef": "vault:ssh-host-key",
+  "runtime": "podman",
+  "workingDir": "/opt/debezium/analytics-vm-1",
+  "privateKeyRef": "file:/opt/conductor/ssh/analytics-vm-1",
   "labels": ["dev", "vm"]
 }
 ```
@@ -185,7 +202,7 @@ If I had to describe the first meaningful implementation slice in one sequence, 
 
 1. represent a host target in Conductor,
 2. replace the current operator-only environment selection with host-aware routing,
-3. render Debezium Server configuration for a remote target,
+3. add host preflight or bootstrap support and render Debezium Server configuration for a remote target,
 4. execute deploy and undeploy through a host-based pipeline controller,
 5. cover that path with tests before expanding into extra lifecycle features or UI work.
 
@@ -202,21 +219,32 @@ The SSH execution layer should support:
 - executing lifecycle commands
 - returning structured error information
 
-For credentials, I would not introduce a separate secret-handling design if the Platform already has a preferred pattern. I would align with the existing secret management approach and use secret references wherever possible rather than embedding credentials directly in pipeline or host definitions.
+For credentials, I would not make the MVP depend on Platform-managed vault support, because that part of the current codebase is not implemented yet. A more realistic first step is to let Conductor receive SSH private keys through its own runtime environment, for example as mounted files or deployment-time secret volumes, and let the host-target model store only a reference to that mounted key. The key material itself should not be persisted in Platform entities.
 
 #### 6. Container-engine-first deployment path
 
 From the official project description, I think a container-based runtime is the right place to start.
 
+The current operator path is useful as a design reference here. Today, `PipelineMapper` takes `PipelineFlat` and produces a `DebeziumServer` resource containing source, sink, offset, schema-history, transform, signal, notification, and logging configuration. For a host target, I would keep the same pipeline input model but change the output artifact. Instead of a Kubernetes custom resource, the host path should render a small runtime bundle that a container engine can execute on a Linux machine.
+
 For the MVP, the deployment flow would be:
 
 1. Validate the target host and runtime prerequisites.
-2. Render Debezium Server configuration from the pipeline model.
-3. Transfer required artifacts to the target host.
-4. Start Debezium Server through a supported container engine.
-5. Persist enough metadata in Conductor to support later lifecycle actions.
+2. Render Debezium Server runtime configuration from the pipeline model.
+3. Transfer a small runtime bundle to the target host.
+4. Pull the Debezium Server image through the supported container engine.
+5. Start Debezium Server through that container engine.
+6. Persist enough metadata in Conductor to support later lifecycle actions.
 
-Even with a general container-engine design, the first version still needs one concrete runtime to support first. I would confirm that choice with mentors before implementation.
+For the container-engine-first MVP, I expect that runtime bundle to contain:
+
+- a rendered `application.properties` file derived from the pipeline's source, sink, transform, offset, schema-history, signal, notification, and log settings
+- a small env file or launch script describing container name, image, mounted paths, and any runtime flags
+- a target working-directory layout on the host where generated files, logs, and lifecycle metadata can live
+
+I would not copy the Debezium Server image itself from Conductor to the target machine. The host runtime should pull that image from the configured registry. I also would not transfer the SSH private key used by Conductor. If a pipeline needs local secret files on the target machine, those should come from pre-provisioned host paths or mounted files rather than from a new vault-replication design in the MVP.
+
+Even with a general container-engine design, the first version still needs one concrete runtime to support. I would confirm that choice with mentors before implementation.
 
 #### 7. Lifecycle management
 
@@ -238,7 +266,7 @@ These are stretch goals, not baseline success criteria.
 
 #### 8. Trade-offs: direct SSH MVP vs. host-side agent
 
-Public mentor feedback on another proposal suggested an alternative design where Conductor uses SSH only for bootstrap, then installs a lightweight service on the host and uses HTTP for ongoing lifecycle management. I think that is a valid direction, but I would still choose a direct SSH-backed MVP first.
+Another possible design is to use SSH only for bootstrap, then install a lightweight service on the host and use HTTP for ongoing lifecycle management. I think that is a valid direction, but I would still choose a direct SSH-backed MVP first.
 
 **Option A: direct SSH-backed lifecycle management**
 
@@ -318,11 +346,13 @@ I consider remote lifecycle testing one of the highest-risk parts of the project
 ##### Week 4
 
 - Add remote file-transfer support and host preflight checks.
+- Implement the narrow bootstrap path for one supported Linux family and one container engine.
 - Define how configuration artifacts are staged on the target host.
 
 ##### Week 5
 
 - Render Debezium Server runtime configuration from the platform pipeline model.
+- Finalize the runtime bundle shape (`application.properties`, launch metadata, working-directory layout).
 - Add unit tests for configuration rendering and command generation.
 
 #### **Phase 2** - Midterm point
@@ -331,7 +361,7 @@ By midterm, I want the project to have a real backend path for host targets, a w
 
 ##### Week 6
 
-- Implement the first full deployment flow for one supported container engine.
+- Implement the first full deployment flow for one supported container engine, including image pull and container start.
 - Persist the metadata needed for later lifecycle operations.
 
 ##### Week 7
@@ -384,3 +414,4 @@ I am aware that I was busy with midterms during the current application period, 
 ### Why I think this scope is feasible
 
 I am intentionally proposing a narrower MVP than some of the public drafts for this project. I think that is the right choice for a 350-hour project. A stable host-based environment implementation, good tests, and a clear lifecycle path would be a stronger result than a broader design that introduces extra components before the core deployment path is reliable. I would rather leave one stretch goal undone than ship a version where the basic deploy and update path is still fragile.
+
