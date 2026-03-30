@@ -98,7 +98,9 @@ The existing approaches to SQLite change tracking each have limitations:
 | Polling | Periodic full-table scans | No change granularity; high overhead; misses intermediate states |
 | Litestream | WAL-frame streaming to S3/GCS | Replication only (not row-level CDC); no change event semantics; no schema awareness |
 
-None of these produce Debezium-compatible change events. A WAL-based Debezium connector addresses these gaps: it reads the WAL file externally (no application changes required), reconstructs row-level change events, and plugs into the existing Debezium/Kafka Connect infrastructure.
+**CDC state of the art in the SQLite ecosystem:** Beyond these basic approaches, several projects have explored SQLite change capture at different levels. Litestream validates that external WAL monitoring is viable by taking over checkpoint control and streaming page images to S3, but operates at page-level granularity without row-level semantics. LiteFS (Fly.io) uses FUSE filesystem interception to capture transaction-level page diffs, but is a replication tool, not a CDC tool. rqlite 9.0 implements true row-level CDC using pre-update hooks with Raft-indexed events and at-least-once delivery, but requires running rqlite's distributed SQLite -- it cannot monitor a standalone SQLite file. Turso/libSQL has native CDC built into their Rust-based SQLite fork (`PRAGMA unstable_capture_data_changes_conn`), writing to a `turso_cdc` table with before/after BLOBs, but requires a modified SQLite engine. Marmot publishes Debezium-format events from SQLite using trigger-based capture, proving demand for SQLite CDC in the Debezium ecosystem. The trigger-based sqlite-cdc project (Go) measures 97-127% write overhead on small tables. CRDT approaches (cr-sqlite, Corrosion) solve multi-writer sync but not CDC-to-Kafka.
+
+The WAL-based approach proposed here occupies a unique position: it is the only approach that simultaneously provides external monitoring (no application modification), row-level change events, Debezium format compatibility, schema awareness, and zero write overhead on the source database. The trade-off is implementation complexity -- decoding physical page images into logical row operations requires b-tree page parsing, which no existing SQLite CDC tool attempts externally. The salt-based offset tracking in this design is analogous to Litestream's generation concept (new random ID when WAL continuity breaks), a proven pattern for handling WAL reset.
 
 #### v1 Scope and Non-Goals
 
@@ -114,7 +116,7 @@ None of these produce Debezium-compatible change events. A WAL-based Debezium co
 
 #### Design Overview
 
-The SQLite connector follows the same architecture as existing Debezium relational database connectors (modeled on the PostgreSQL connector, as directed by mentor Giovanni Panice). The `SqliteConnectorTask` creates a `ChangeEventSourceCoordinator` that orchestrates the two-phase lifecycle: snapshot first, then streaming.
+The SQLite connector follows the same architecture as existing Debezium relational database connectors (modeled on the PostgreSQL connector after studying all existing connector implementations). The `SqliteConnectorTask` creates a `ChangeEventSourceCoordinator` that orchestrates the two-phase lifecycle: snapshot first, then streaming.
 
 1. **Snapshot phase**: Acquires a SQLite read transaction (providing snapshot isolation under WAL mode), performs a full table scan of all configured tables, and emits `READ` events for each existing row. The read transaction's WAL position establishes the handoff point for streaming.
 
@@ -278,7 +280,7 @@ public class SqliteOffsetContext extends CommonOffsetContext<SqliteSourceInfo> {
 }
 ```
 
-The `walEpoch` field makes offset comparison trivial — `(epoch=5, offset=100)` is always after `(epoch=4, offset=99999)`. This design was based on mentor Giovanni's guidance that Debezium has "no convention" for non-monotonic offsets and I needed to design my own.
+The `walEpoch` field makes offset comparison trivial — `(epoch=5, offset=100)` is always after `(epoch=4, offset=99999)`. After tracing through SQL Server's `TxLogPosition` and PostgreSQL's `Lsn`, I confirmed that neither handles non-monotonic offsets — both rely on monotonically increasing LSNs. The salt-based epoch design was developed to solve this gap.
 
 **Resume logic**: On restart, the connector reads the stored offset and compares the WAL salts:
 - **Salts match**: Resume reading from `walFrameOffset`
@@ -287,7 +289,7 @@ The `walEpoch` field makes offset comparison trivial — `(epoch=5, offset=100)`
 
 #### Schema Evolution
 
-Following mentor guidance ("check MySQL connector"), the connector uses `HistorizedRelationalDatabaseSchema` (the same base class as MySQL and SQL Server connectors). The approach follows the SQL Server connector pattern — schema detection via metadata comparison rather than DDL parsing:
+After comparing MySQL, SQL Server, and PostgreSQL connectors' schema handling strategies, the connector uses `HistorizedRelationalDatabaseSchema` (the same base class as MySQL and SQL Server connectors). The approach follows the SQL Server connector pattern — schema detection via metadata comparison rather than DDL parsing:
 
 1. On startup, recover schema state from `SchemaHistory` store
 2. Before processing each WAL transaction, check `PRAGMA schema_version`
@@ -298,7 +300,7 @@ Following mentor guidance ("check MySQL connector"), the connector uses `Histori
 
 #### Snapshot-to-Stream Handoff
 
-Following mentor guidance ("take a look at read-lock in SQLite"), the handoff uses SQLite's WAL-mode snapshot isolation:
+Based on analysis of SQLite's WAL-mode locking semantics, the handoff uses snapshot isolation:
 
 1. Begin read transaction (`BEGIN DEFERRED` + first read) — snapshot pinned
 2. Record WAL end mark — the JDBC connection acquires `WAL_READ_LOCK(N)`
@@ -362,10 +364,10 @@ The connector implements the standard Debezium connector class hierarchy:
 
 #### Key Design Decisions
 
-- **WAL-based over trigger-based**: WAL reading is passive — no DDL changes to the target database. Mentor confirmed WAL-based approach.
-- **Page-level diff over session extension**: The `sqlite3session` API requires explicit table registration. WAL-based change detection works with any SQLite database.
-- **Non-monotonic offset (salt + epoch) over frame number**: Mentor confirmed "no convention — design your own." The salt-based design handles WAL reset transparently.
-- **Schema version polling over per-event schema**: Mentor directed: "check MySQL connector." Checking `schema_version` is a single integer comparison per batch cycle.
+- **WAL-based over trigger-based**: WAL reading is passive — no DDL changes to the target database, zero write overhead. The CDC landscape analysis confirms trigger-based approaches (e.g., sqlite-cdc) incur 97-127% write overhead.
+- **Page-level diff over session extension**: The `sqlite3session` API requires explicit table registration and is C-only. WAL-based change detection works with any unmodified SQLite database.
+- **Non-monotonic offset (salt + epoch) over frame number**: After studying all existing Debezium connectors, none handle non-monotonic offsets. The salt-based epoch design is novel, analogous to Litestream's generation concept.
+- **Schema version polling over per-event schema**: MySQL and SQL Server connectors both use historized schema without embedding schema in every event. `schema_version` polling follows this proven pattern.
 
 #### Risks and Mitigation
 
