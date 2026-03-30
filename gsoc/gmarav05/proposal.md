@@ -72,8 +72,9 @@ This project will deliver:
 - LangGraph node integration for agent-based workflows.
 - A custom change handler that converts Debezium CDC events into LangChain 
   Documents and syncs them into vector stores in real time
-- A pluggable vector store backend (starting with Chroma, extendable to 
-  PGVector and others)
+- A pluggable vector store backend (Chroma and Qdrant as initial targets, 
+  extendable to PGVector and others)
+
 
 I have already built a working prototype PostgreSQL CDC events (INSERT, 
 UPDATE, DELETE) flowing through pydbzengine into a Chroma vector store via 
@@ -241,6 +242,8 @@ docs = retriever.invoke("What orders are shipped?")
 | LangChain `VectorStore` abstraction | Pluggable backends | Less DB-specific control |
 | Local embeddings | No API key, works offline | Slower than cloud embeddings |
 | Deterministic doc IDs `table:pk` | Clean update/delete tracking | Assumes single primary key |
+| Qdrant as initial target | Production-grade vector DB, mentor-recommended | Requires Qdrant server running |
+
 
 
 #### 5.1 Testing Strategy
@@ -331,8 +334,9 @@ vector store synced.
 **Deliverable:** Full working library — `LiveContext.start()` streams 
 changes into vector store automatically.
 
-##### Week 5 — Second Vector Store Backend + Testing
-- Add PGVector as second vector store backend.
+##### Week 5 — Qdrant Vector Store Backend + Testing
+- Add Qdrant as second vector store backend (aligns with my existing 
+  Qdrant connection validator contribution).
 - Ensure pluggable backend switching via configuration.
 - Write comprehensive test suite covering all op types on both backends.
 - Fix bugs found during integration testing.
@@ -402,7 +406,7 @@ TestPyPI.
 
 If time permits, then I would like to work on these additional features:
 
-1. Additional vector store backends (FAISS, Milvus, Pinecone) priority based on popularity.
+1. Additional vector store backends (FAISS, PGVector, Milvus, Pinecone) priority based on popularity.
 2. Async processing for non-blocking event handling.
 3. Schema-aware document generation (auto-detect column types).
 4. Monitoring dashboard showing CDC event throughput and latency.
