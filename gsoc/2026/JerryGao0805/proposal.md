@@ -122,7 +122,7 @@ Every `PipelineController` method maps to an SSH command on the remote host:
 | # | Component | Description | Follows Pattern Of |
 |---|-----------|-------------|--------------------|
 | 1 | **HostEntity + REST API** | New JPA entity + `/api/hosts` CRUD + `/api/hosts/validate` SSH test endpoint | `ConnectionEntity` + `ConnectionResource` |
-| 2 | **SSH Credential Storage** | Encrypted SSH keys/passwords stored via Java Keystore on the Conductor host; DB stores only a credential alias, never raw secrets | New (see [Credential Management](#ssh-credential-management)) |
+| 2 | **SSH Credential Storage** | SSH keys read from K8s Secrets mounted as volume (default) or Java Keystore (fallback); DB stores only a credential alias, never raw secrets | New (see [Credential Management](#ssh-credential-management)) |
 | 3 | **HostEnvironmentController** | Implements `EnvironmentController`, returns `HostPipelineController` | `OperatorEnvironmentController` |
 | 4 | **HostPipelineController** | Implements `PipelineController` — deploy/undeploy/stop/start/logReader/sendSignal via SSH + Docker | `OperatorPipelineController` |
 | 5 | **SSH Adapter Service** | Wraps SSH session management — connect, execute, stream, disconnect. Connection pooling, key/password auth | New (Apache SSHD or JSch) |
@@ -172,16 +172,20 @@ public class DeploymentTargetEntity {
 
 #### SSH Credential Management
 
-**Storage — Java Keystore (JKS / PKCS12):**
-- A keystore file lives on the Conductor host, protected by a master password from an environment variable (`CONDUCTOR_KEYSTORE_PASSWORD`)
-- SSH private keys and passwords are stored as keystore entries, each identified by an **alias**
-- The `HostEntity` stores only the alias string (e.g., `"prod-server-key"`), never the raw credential
+SSH credentials must never be stored as plaintext in the database. Since the platform's Vault system is not yet implemented, this project introduces a pluggable `CredentialProvider` interface with two backends:
 
-**Why this approach:**
-- Java Keystore is built into the JDK — no external dependencies
-- Keys are encrypted at rest (AES-256 by default in PKCS12)
-- The database never holds sensitive material — safe even if the DB is compromised
-- When the platform's Vault system is implemented in the future, migration is straightforward: swap the keystore backend for the Vault backend behind the same `CredentialProvider` interface
+**Approach comparison:**
+
+| | K8s Secrets (volume mount) | Java Keystore (JKS/PKCS12) |
+|---|---|---|
+| **How it works** | SSH keys stored as K8s Secret objects, mounted as files into the Conductor pod (e.g., `/etc/conductor/ssh-keys/{alias}`) | Keystore file on the Conductor host, protected by a master password from env var |
+| **Encryption at rest** | Requires etcd encryption config | Built-in (AES-256 in PKCS12) |
+| **Secret rotation** | Handled by K8s (auto-updates mounted files) | Manual — must update keystore file |
+| **External secret managers** | Native via CSI drivers or External Secrets Operator | Requires custom code |
+| **Access control** | K8s RBAC + namespace isolation | File system permissions only |
+| **Works outside K8s** | No | Yes |
+| **Implementation complexity** | Simpler — just read files from a known path | More custom code |
+
 
 **Interface:**
 ```java
@@ -193,8 +197,9 @@ public interface CredentialProvider {
 }
 ```
 
-- Default implementation: `KeystoreCredentialProvider` backed by JKS/PKCS12
-- Alternative backends (system keyring, HashiCorp Vault) can be plugged in via CDI without changing the host management code
+- Default: `K8sVolumeCredentialProvider` — reads SSH keys from mounted Secret path
+- Fallback: `KeystoreCredentialProvider` — for non-K8s environments
+- Switchable via CDI without changing the host management code
 
 **HostEntity model:**
 ```java
@@ -217,7 +222,7 @@ public class HostEntity {
     @Enumerated(EnumType.STRING)
     private AuthType authType;            // SSH_KEY or PASSWORD
 
-    private String credentialAlias;        // Reference to keystore entry
+    private String credentialAlias;        // Reference to credential entry (K8s Secret name or keystore alias)
 
     @Enumerated(EnumType.STRING)
     private ContainerRuntime runtime;     // DOCKER
@@ -305,7 +310,7 @@ docker run -d \
 | **Container naming convention** | Store container IDs in DB | Stateless lookup survives Conductor restarts without orphan cleanup logic |
 | **Reuse `LogReader` interface** | Separate log streaming path | Zero changes to `LogStreamingService`, WebSocket, and frontend. Tradeoff: coupled to existing streaming contract |
 | **Deployment target association** | Single `environmentType` field on pipeline | Supports deploying one pipeline to both K8s and host simultaneously. Tradeoff: slightly more complex schema |
-| **Java Keystore for SSH creds** | Store encrypted keys in DB | DB never holds sensitive material; keystore is encrypted at rest; easy to migrate to Vault later |
+| **K8s Secrets for SSH creds (default)** | Java Keystore / store in DB | Native to Conductor's K8s deployment; RBAC + external secret manager support for free; Keystore as fallback for non-K8s |
 | **Docker only** | Support bare process deployment | Container isolation is safer, cleaner lifecycle. Stretch goal could add process mode later |
 
 #### Testing Strategy
@@ -313,7 +318,7 @@ docker run -d \
 | Layer | Framework | What's Tested |
 |-------|-----------|---------------|
 | **SSH Adapter** | `@QuarkusTest` + TestContainers (`atmoz/sftp` image) | Connect, execute, stream output, key auth, timeout handling |
-| **CredentialProvider** | `@QuarkusTest` | Store/load/delete SSH keys via keystore; alias resolution |
+| **CredentialProvider** | `@QuarkusTest` | Load/store SSH keys via K8s volume mount and keystore fallback; alias resolution |
 | **HostPipelineController** | `@QuarkusTest` + TestContainers (SSH + Docker-in-Docker) | Full deploy/undeploy/stop/start cycle against real containers |
 | **HostLogReader** | `@QuarkusTest` + TestContainers | Log streaming over SSH, verify lines reach `LogStreamingService` |
 | **Host REST API** | `@QuarkusTest` + RestAssured | CRUD operations, validation endpoint, provisioning, error responses |
@@ -341,7 +346,7 @@ docker run -d \
 
 ##### Week 1 (May 25 - May 31)
 - `HostEntity` JPA model (hostname, port, username, auth type, credential alias, container runtime) + Flyway migration
-- `CredentialProvider` interface + `KeystoreCredentialProvider` implementation
+- `CredentialProvider` interface + `K8sVolumeCredentialProvider` (default) and `KeystoreCredentialProvider` (fallback)
 - `HostResource` — REST API at `/api/hosts` (CRUD endpoints + credential upload)
 - Unit tests for host API and credential provider
 
