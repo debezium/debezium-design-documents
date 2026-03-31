@@ -338,6 +338,10 @@ The following image gives a detailed structure of a cell.
 
 The record header in a cell contains serial types. Serial types in the record header tell the decoder what type each column value is and how many bytes it occupies in the body. The decoder reads the header first to collect all serial types, then reads the body values in order. For example, serial type 1 means a 1-byte signed integer, serial type 7 means an 8-byte IEEE 754 float, and odd values ≥ 13 mean UTF-8 text with length (N-13)/2. The decoder reads all serial types from the header first, then reads the body values in order using those sizes.
 
+
+### WITHOUT ROWID Tables
+WITHOUT ROWID tables use index b-tree pages (0x0A) instead of table b-tree pages (0x0D). According to the SQLite file format specification, the only differences are that there is no rowid varint in the cell, PK columns appear first in the record body, and the overflow threshold formula uses the index b-tree calculation `(((U-12)*64/255)-23)` rather than the table b-tree one `(U-35)`. We can handle this with a separate code path: skip the rowid varint read, use the declared PK columns from schema metadata as the composite diff key, and apply the correct overflow threshold.
+
 ### Overflow Pages
 When a row's payload exceeds roughly 1/4 of the page size, SQLite stores the overflow in overflow pages. The cell on the leaf page contains only the first portion of the record and a 4-byte pointer to the first overflow page. Each overflow page begins with a 4-byte pointer to the next, followed by continuation data. The decoder follows this chain, reading each overflow page from the WAL frame map or .db file, until the full record is reassembled.
 
@@ -426,6 +430,7 @@ The goal is a continuous streaming loop that processes every committed SQLite tr
 - Checkpoint lifecycle
 - Correct restart recovery from stored offset (wal_frame_index, data_version)
 - An Emitter building Debezium SourceRecord objects with correct before/after Struct values and Avro-compatible naming
+- Transaction metadata events: BEGIN and END events emitted per transaction, with txId populated so consumers can group related events. (Added after discussion with mentors)
 
 ### How changes are detected
 
@@ -452,8 +457,13 @@ The connector prevents this with a three-layer strategy:
 
 - **Periodic controlled checkpoint:** To prevent the WAL from growing without bound, the connector should perform its own checkpoint at configurable intervals. The connector needs to release BEGIN, run PRAGMA wal_checkpoint(FULL), clear the page cache and re-acquire BEGIN. Because the connector controls the timing, it knows the cache is intentionally stale during this window and rebuilds it cleanly from the updated .db file on the next reads.
 
+The page cache is bounded, that is the periodic controlled checkpoint clears it entirely. At the default interval of 1000 frames with 4096 bytes per page, the worst case before a cache clear is ~4MB. As an additional safety net, I will add a configurable max cache size. It tracks total cache size on every write and forces an early controlled checkpoint immediately if the limit is exceeded.
+
 ### Building SourceRecords
 The change record emitter receives the operation type and before/after column value maps from the WAL differ, builds Kafka Connect Struct objects using the schema from SqliteDatabaseSchema, and wraps them in Debezium's standard change event envelope. Field names and topic names are normalised to Avro-compatible identifiers at this stage. The actual serialisation to Avro or JSON binary format is handled by the Kafka Connect runtime, not by the connector.
+
+### Transaction Metadata
+WAL frames are processed sequentially within a committed block, so event ordering within a transaction is always preserved. The connector also supports Debezium's transaction metadata protocol. We emit a BEGIN event when a new transaction starts, then DATA events for each row change sharing the same txId, and an END event after the last change in the transaction. This allows consumers to identify which events belong to the same commit and process them atomically.
 
 ### Restart Recovery
 Every time a transaction is processed, the connector should update its offset:
@@ -538,7 +548,41 @@ The following limitations are inherent to SQLite's architecture or to the scope 
 | WAL mode required | Rollback journal mode deletes change history on every commit — there is nothing to read for CDC |
 | SQLite ≥ 3.51.3 recommended | Earlier versions have a WAL reset bug that can cause data corruption under concurrent checkpoint conditions, fixed in March 2026 |
 | Application connections should also set `wal_autocheckpoint=0` | The WAL hook suppresses checkpoints on the database level, but documenting this for application connections provides an additional safety layer |
-| `WITHOUT ROWID` and overflow pages handled in Phase 2 | These are valid SQLite features and will be supported, but the iterative approach recommended by mentors prioritises common cases first |
+
+## Alternative Approaches Considered
+
+### JDBC Polling
+The simplest approach would be to poll each tracked table periodically via JDBC. This requires no WAL parsing and works with any SQLite journaling mode.
+ 
+There are 2 problems with this. First, it requires a timestamp or version column on every tracked table. That means we need to modify the application, which contradicts the goal of zero application changes. Second, it cannot produce correct before values without maintaining a full shadow copy of every row, which doubles the storage requirement and adds significant complexity. This approach was flagged as a concern by Vincenzo and was rejected early in the design process.
+
+### WAL-Mode Hook via SQLite Extension
+SQLite provides a C-level update hook (`sqlite3_update_hook`) that fires on every INSERT, UPDATE, and DELETE with the rowid and table name. This gives row-level events without any binary parsing.
+ 
+The problem is that it only fires in the same process as the writer. Tt is a C callback registered on a live connection, not a file-level observer. Since the connector runs as a separate JVM process from the application writing to SQLite, this hook is not accessible. It would require embedding the connector inside the application process, eliminating the possibility of a standalone Kafka Connect deployment
+
+### Logical Replication via SQLite Session Extension
+ 
+SQLite has a Sessions extension that tracks changes to a database and produces a compact binary changeset. This is the closest SQLite equivalent to PostgreSQL's logical replication.
+ 
+The Sessions extension must be compiled into SQLite explicitly — it is not enabled by default in most distributions. It must be attached to an open connection on the same process that is writing, just like the hook. It is not observable from an external process reading the file.
+
+## Drawbacks of the Chosen Approach
+ 
+**Co-located deployment only.** Because the connector reads the `.db-wal` file directly via `FileChannel`, it must run on the same machine as the SQLite database. This is the most significant operational constraint.
+ 
+**WAL mode required:** The application must have WAL mode enabled. Rollback journal mode leaves no persistent change history.
+
+**Page cache memory usage:** The page cache holds one full page per unique modified page since the last checkpoint. Under high write throughput, this can grow large sizes before a checkpoint clears it. This is addressed by a configurable size limit (`wal.page.cache.max.size.mb`) that forces an early checkpoint if exceeded.
+ 
+**Binary format dependency:** The connector parses SQLite's internal WAL binary format directly. Any future change to the WAL format would require a connector update. SQLite has maintained binary compatibility since version 3.0.0 (2004) and explicitly commits to format stability, making this risk minimal.
+ 
+**No sub-row granularity:** The diff approach compares decoded page states before and after a transaction. If the same row is modified multiple times within a single transaction, only the final change is visible and intermediate states are not captured. This is how most Debezium connectors behave (Postgres logical decoding also emits one event per row per transaction).
+
+## How do other systems implement CDC (Eg. Turso)
+From what I’ve been able to understand, they don’t rely on raw WAL decoding for CDC. Turso is built on libSQL, which extends SQLite with a replication layer. They capture changes at a higher level within the engine itself and stream them as logical updates instead of reconstructing them from page diffs. Because they control the database engine, they can expose structured change information directly.
+
+In contrast, a Debezium connector has to work with stock SQLite , without modifying the engine or requiring application changes. That’s why WAL parsing in my opinion is the most suitable approach.
 
 # Roadmap
 
@@ -636,7 +680,7 @@ At this point we have snapshot working end to end, WAL parsing engine fully unit
 ### Week 9: Overflow Pages & WITHOUT ROWID
 
 - Implement overflow page chain following in the page decoder and detect when a cell's payload exceeds the inline threshold.
-- Implement `WITHOUT ROWID` table handling.
+- Implement `WITHOUT ROWID` table handling: handle index b-tree page type (0x0A), skip rowid varint, use composite PK columns as diff key, apply index overflow threshold formula.
 - Integration tests: large row payloads decoded correctly, `WITHOUT ROWID` table changes captured
 
 ---
