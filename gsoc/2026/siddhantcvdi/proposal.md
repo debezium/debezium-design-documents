@@ -338,7 +338,6 @@ The following image gives a detailed structure of a cell.
 
 The record header in a cell contains serial types. Serial types in the record header tell the decoder what type each column value is and how many bytes it occupies in the body. The decoder reads the header first to collect all serial types, then reads the body values in order. For example, serial type 1 means a 1-byte signed integer, serial type 7 means an 8-byte IEEE 754 float, and odd values ≥ 13 mean UTF-8 text with length (N-13)/2. The decoder reads all serial types from the header first, then reads the body values in order using those sizes.
 
-
 ### WITHOUT ROWID Tables
 WITHOUT ROWID tables use index b-tree pages (0x0A) instead of table b-tree pages (0x0D). According to the SQLite file format specification, the only differences are that there is no rowid varint in the cell, PK columns appear first in the record body, and the overflow threshold formula uses the index b-tree calculation `(((U-12)*64/255)-23)` rather than the table b-tree one `(U-35)`. We can handle this with a separate code path: skip the rowid varint read, use the declared PK columns from schema metadata as the composite diff key, and apply the correct overflow threshold.
 
@@ -565,7 +564,7 @@ The problem is that it only fires in the same process as the writer. Tt is a C c
  
 SQLite has a Sessions extension that tracks changes to a database and produces a compact binary changeset. This is the closest SQLite equivalent to PostgreSQL's logical replication.
  
-The Sessions extension must be compiled into SQLite explicitly — it is not enabled by default in most distributions. It must be attached to an open connection on the same process that is writing, just like the hook. It is not observable from an external process reading the file.
+The Sessions extension must be compiled into SQLite explicitly. It is not enabled by default in most distributions. It must be attached to an open connection on the same process that is writing, just like the hook. It is not observable from an external process reading the file.
 
 ## Drawbacks of the Chosen Approach
  
@@ -598,6 +597,7 @@ Before coding starts I plan to:
 - Read the official SQLite WAL documentation and file format specification in detail.
 - Discuss and finalise the detailed design with mentors, particularly the WAL hook API access via `sqlite-jdbc`, the `WITHOUT ROWID` handling approach, and overflow page scope for Phase 1.
 
+By the end of the community bonding period, I will have all classes, files, and a solid low-level architecture finalised and reviewed with mentors. If time permits, I will begin coding early as a safety net for the implementation weeks.
 ---
 
 ### Week 1: Project Skeleton
@@ -700,7 +700,7 @@ At this point we have snapshot working end to end, WAL parsing engine fully unit
 
 ---
 
-### Final Week: Documentation & Submission
+### Week 12: Documentation & Submission
 
 - Complete README: prerequisites, quick start, full configuration reference, deployment guide for both Kafka Connect and Embedded Engine
 - Document known limitations
