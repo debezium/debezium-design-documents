@@ -4,7 +4,7 @@ An IoT gateway caches sensor readings in SQLite during a network outage. When it
 
 SQLite's WAL was designed for local concurrency, not replication. Unlike PostgreSQL's logical decoding or MySQL's binlog, SQLite WAL frames are physical page images — not logical row operations. The connector must parse WAL frame headers to identify committed transactions, decode b-tree leaf pages to extract row data, diff page states to determine which rows were inserted, updated, or deleted, and handle edge cases including WITHOUT ROWID tables, overflow pages, and WAL checkpoint/reset cycles. The offset tracking design uses WAL salt values combined with commit frame positions as a resume token, addressing the fundamental challenge that WAL frame indices are non-monotonic (they reset on checkpoint). Schema evolution is tracked via `PRAGMA schema_version`, following the MySQL connector's pattern of not embedding schema in every CDC event, based on comparative analysis of MySQL, SQL Server, and PostgreSQL connectors' schema handling strategies.
 
-I have engaged directly with the project mentor: Giovanni Panice responded to my technical email with three specific design answers (no convention for non-monotonic offsets — design your own; check MySQL connector for schema evolution; use SQLite read-lock for snapshot-to-stream handoff) and directed me to "read the guideline and propose a draft pull request." I have an open PR (debezium-platform#309) and 11 merged PRs across 5 open-source organizations including Apache Beam, IoTDB, ShardingSphere, Iceberg, and OpenCV. I have built the Debezium codebase locally and run the PostgreSQL connector test suite.
+I have engaged directly with the project mentor: Giovanni Panice responded to my technical email with three specific design answers (no convention for non-monotonic offsets — design your own; check MySQL connector for schema evolution; use SQLite read-lock for snapshot-to-stream handoff) and directed me to "read the guideline and propose a draft pull request." I have an open PR (debezium-platform#309) and 12 merged PRs across 5 open-source organizations including Apache Beam, IoTDB, ShardingSphere, Iceberg, and OpenCV. I have built the Debezium codebase locally and run the PostgreSQL connector test suite.
 
 **Zulip introduction:** [Zihan - SQLite Source Connector](https://debezium.zulipchat.com/#narrow/channel/573881-community-gsoc/topic/Zihan.20-.20SQLite.20Source.20Connector)
 
@@ -16,7 +16,7 @@ This project matters to me because it replaces fragile one-off sync code in mobi
 
 - **Mentor engagement**: Giovanni Panice provided three specific design answers that shaped this proposal's architecture
 - **Working PoC**: Java WAL reader + b-tree page decoder, 11/11 tests passing, ~50K frames/sec throughput ([sqlite-wal-poc](https://github.com/PDGGK/sqlite-wal-poc))
-- **Open-source track record**: 11 merged PRs across Apache Beam, IoTDB, ShardingSphere, Iceberg, OpenCV; open PR in debezium-platform
+- **Open-source track record**: 12 merged PRs across Apache Beam, IoTDB, ShardingSphere, Iceberg, OpenCV; open PR in debezium-platform
 - **Offset design**: Salt-based epoch offset token that survives WAL checkpoint/reset — after studying all existing Debezium connectors, none handle non-monotonic offsets
 - **Fallback plan**: If full page decoding proves too complex by Week 4, switch to hybrid WAL-detection + JDBC-read approach that still produces valid Debezium events
 
@@ -632,7 +632,7 @@ SQLite is the local data store for IoT gateways, mobile apps, and embedded syste
 
 I am a Bachelor of Science student at the University of Melbourne (Computing and Software Systems + Data Science, First Class Honours). Awards: British Physics Olympiad (BPhO) Top Gold; Extended Project Qualification A\*.
 
-I have been contributing to open-source projects since January 2026, with 11 merged PRs across 5 organizations (Apache Beam, Apache ShardingSphere, Apache IoTDB, Apache Iceberg, and OpenCV), plus active open PRs under review. My contributions consistently target resource management, connector reliability, and correct lifecycle handling -- the same concerns that dominate CDC connector development. I have built the Debezium codebase locally and run the PostgreSQL connector's integration test suite.
+I have been contributing to open-source projects since January 2026, with 12 merged PRs across 5 organizations (Apache Beam, Apache ShardingSphere, Apache IoTDB, Apache Iceberg, and OpenCV), plus active open PRs under review. My contributions consistently target resource management, connector reliability, and correct lifecycle handling -- the same concerns that dominate CDC connector development. I have built the Debezium codebase locally and run the PostgreSQL connector's integration test suite.
 
 When I got stuck understanding how Debezium connectors handle non-monotonic offsets (which is core to this proposal), I traced through the SQL Server connector's `TxLogPosition` and the PostgreSQL connector's `Lsn` class to understand how other connectors solve similar ordering problems. After tracing through SQL Server's `TxLogPosition` and PostgreSQL's `Lsn`, I confirmed that neither handles non-monotonic offsets — both rely on monotonically increasing LSNs. The salt-based epoch design was developed to solve this gap.
 
@@ -645,7 +645,7 @@ When I got stuck understanding how Debezium connectors handle non-monotonic offs
 
 ### Open-Source Contributions
 
-11 merged PRs across 5 organizations, plus active open PRs under review. All contributions focus on resource management, connector reliability, and correct type handling — the same work this project asks for.
+12 merged and 13 open PRs across 8 organizations. All contributions focus on resource management, connector reliability, and correct type handling — the same work this project asks for.
 
 **Debezium** (directly related to this project):
 
@@ -663,6 +663,8 @@ When I got stuck understanding how Debezium connectors handle non-monotonic offs
 | [beam#37297](https://github.com/apache/beam/pull/37297): Document Ubuntu 24.04 Python version requirements | \merged{} Merged |
 | [beam#37458](https://github.com/apache/beam/pull/37458): Add record header support to WriteToKafka | \merged{} Merged |
 | [beam#37530](https://github.com/apache/beam/pull/37530): Warn when ValueState contains collection types | \openpr{} Open |
+| [beam#37516](https://github.com/apache/beam/pull/37516): Support nested column paths in Iceberg keep/drop config | \openpr{} Open |
+| [beam#37342](https://github.com/apache/beam/pull/37342): Fix RequestResponseIO retryable exception types | \openpr{} Open |
 
 **Apache IoTDB** (time-series database expertise):
 
@@ -670,6 +672,9 @@ When I got stuck understanding how Debezium connectors handle non-monotonic offs
 |-------------|--------|
 | [iotdb#17212](https://github.com/apache/iotdb/pull/17212): Fix Process resource leak in system metrics collection | \merged{} Merged |
 | [iotdb#17180](https://github.com/apache/iotdb/pull/17180): Support inclusive end time syntax in GROUP BY clause | \openpr{} Open |
+| [iotdb#17400](https://github.com/apache/iotdb/pull/17400): Fix C++ client time column access returning NULL for non-long types | \openpr{} Open |
+| [iotdb#17408](https://github.com/apache/iotdb/pull/17408): Fix Java client time column access throwing ArrayIndexOutOfBoundsException | \openpr{} Open |
+| [iotdb#17411](https://github.com/apache/iotdb/pull/17411): Fix last_by returning null row after deleting all table data | \openpr{} Open |
 
 **Apache ShardingSphere** (resource management):
 
@@ -684,6 +689,7 @@ When I got stuck understanding how Debezium connectors handle non-monotonic offs
 |-------------|--------|
 | [iceberg#15463](https://github.com/apache/iceberg/pull/15463): Fix JDBC ResultSet leaks in JdbcCatalog and JdbcUtil | \merged{} Merged |
 | [opencv#28502](https://github.com/opencv/opencv/pull/28502): Fix erode/dilate documentation parameter names | \merged{} Merged |
+| [opencv#28698](https://github.com/opencv/opencv/pull/28698): Fix resource leaks in Android Utils.java | \merged{} Merged |
 | [opencv#28699](https://github.com/opencv/opencv/pull/28699): Replace System.exit with exceptions in HighGui | \merged{} Merged |
 
 **Eclipse SW360** (resource management):
@@ -693,6 +699,13 @@ When I got stuck understanding how Debezium connectors handle non-monotonic offs
 | [sw360#3969](https://github.com/eclipse-sw360/sw360/pull/3969): Fix CSVReader resource leak in UserDatabaseHandler | \openpr{} Open |
 | [sw360#3968](https://github.com/eclipse-sw360/sw360/pull/3968): Fix resource leak in SVMUtils | \openpr{} Open |
 | [sw360#3967](https://github.com/eclipse-sw360/sw360/pull/3967): Fix FileInputStream leak in ComponentDatabaseHandler | \openpr{} Open |
+
+**Apache SeaTunnel** (resource management):
+
+| Contribution | Status |
+|-------------|--------|
+| [seatunnel#10532](https://github.com/apache/seatunnel/pull/10532): Fix JDBC and file resource leaks | \openpr{} Open |
+| [seatunnel#10529](https://github.com/apache/seatunnel/pull/10529): Fix premature socket close in SocketSourceReader | \openpr{} Open |
 
 **Technical skills:** Java, Python, C/C++, TypeScript, Spring Framework, Kafka Connect, time-series databases, DAO patterns, microservices, Docker, JUnit, Testcontainers, Git/GitHub.
 
