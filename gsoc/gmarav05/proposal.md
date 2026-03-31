@@ -72,7 +72,7 @@ This project will deliver:
 - LangGraph node integration for agent-based workflows.
 - A custom change handler that converts Debezium CDC events into LangChain 
   Documents and syncs them into vector stores in real time
-- A pluggable vector store backend (Chroma and Qdrant as initial targets, 
+- A pluggable vector store backend (Qdrant and Chroma as initial targets, 
   extendable to PGVector and others)
 
 
@@ -318,9 +318,9 @@ design doc approved.
 
 ##### Week 3 — Vector Store Syncer
 - Implement `VectorStoreSyncer` with add/update/delete logic.
-- Integrate with Chroma as the first vector store backend.
+- Integrate with Qdrant as the first vector store backend.
 - Handle edge cases (duplicate IDs, missing fields, null values).
-- Write integration tests with real Chroma instance.
+- Write integration tests with real Qdrant instance.
 
 **Deliverable:** End-to-end pipeline working CDC event to Document to
 vector store synced.
@@ -334,11 +334,10 @@ vector store synced.
 **Deliverable:** Full working library — `LiveContext.start()` streams 
 changes into vector store automatically.
 
-##### Week 5 — Qdrant Vector Store Backend + Testing
-- Add Qdrant as second vector store backend (aligns with my existing 
-  Qdrant connection validator contribution).
+##### Week 5 — Chroma Vector Store Backend + Multi-Backend Testing
+- Add Chroma as second vector store backend.
 - Ensure pluggable backend switching via configuration.
-- Write comprehensive test suite covering all op types on both backends.
+- Write comprehensive test suite covering all op types on both backends (Qdrant and Chroma).
 - Fix bugs found during integration testing.
 
 **Deliverable:** Multi-backend support working. Pre-release published on 
