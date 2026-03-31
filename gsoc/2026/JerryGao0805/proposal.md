@@ -174,18 +174,6 @@ public class DeploymentTargetEntity {
 
 SSH credentials must never be stored as plaintext in the database. Since the platform's Vault system is not yet implemented, this project introduces a pluggable `CredentialProvider` interface with two backends:
 
-**Approach comparison:**
-
-| | K8s Secrets (volume mount) | Java Keystore (JKS/PKCS12) |
-|---|---|---|
-| **How it works** | SSH keys stored as K8s Secret objects, mounted as files into the Conductor pod (e.g., `/etc/conductor/ssh-keys/{alias}`) | Keystore file on the Conductor host, protected by a master password from env var |
-| **Encryption at rest** | Requires etcd encryption config | Built-in (AES-256 in PKCS12) |
-| **Secret rotation** | Handled by K8s (auto-updates mounted files) | Manual — must update keystore file |
-| **External secret managers** | Native via CSI drivers or External Secrets Operator | Requires custom code |
-| **Access control** | K8s RBAC + namespace isolation | File system permissions only |
-| **Works outside K8s** | No | Yes |
-| **Implementation complexity** | Simpler — just read files from a known path | More custom code |
-
 
 **Interface:**
 ```java
