@@ -8,5 +8,6 @@ When creating a new document, please add it to the list below.
 
 * [DDD-1](DDD-1.md): Support for multiple source partitions for relational Debezium connectors
 * [DDD-3](DDD-3.md): Incremental snapshotting
+* [DDD-4](DDD-4.md): Manipulate Connector Offsets via Debezium Signals
 * [DDD-7](DDD-7.md): Asynchronous Debezium embedded engine
 * [DDD-9](DDD-9.md): Oracle unbuffered adapter
