@@ -3,8 +3,8 @@
 ## Overview
 
 This document describes a proposed redesign of the Debezium Oracle connector's LogMiner processing pipeline.
-The current implementation is single-threaded, combining database reading, event processing, and event dispatch into a sequential flow, which we've traditionally used for all our connectors.
-But this approach for LogMiner leads to heap pressure from large in-flight transactions and limits throughput by coupling IO bound and CPU bound work together.
+The current implementation is single-threaded, combining database reading, event processing, and event dispatch into a sequential flow, which has traditionally been the approach for all connectors.
+But this approach for LogMiner leads to heap pressure from large in-flight transactions and limits throughput by coupling I/O-bound and CPU-bound work together.
 
 The proposed architecture splits the pipeline into three logical threads, connected by two `ChronicleQueue` instances, both using disk-backed memory-mapped files for inter-thread communication.
 This eliminates heap exhaustion for large transactions while improving throughput and scalability.
@@ -23,19 +23,52 @@ The primary limitations of this approach are:
 * **Heap Exhaustion**: Large or long-running transactions accumulate unbounded heap usage as events are buffered until a `COMMIT` or `ROLLBACK` is observed. 
 While the connector does have off-heap buffer options using Infinispan and Ehcache, the disk-based persistence offered by these solutions is slow, and contributes to throughput issues.
 * **Coupled I/O**: The database reader stalls while processing and emitting events, reducing the LogMiner query throughput.
-* **No audit trail**: All LogMiner output is discarded after processing, with no ability to replay and/or inspect what we originally mined.
+* **No audit trail**: All LogMiner output is discarded after processing, with no ability to replay or inspect what was originally mined.
 This becomes even more important as Oracle often only retains logs for a limited period of time (sometimes hours).
 
 ## Goal
 
 The goal of this proposal is:
 
-* Provide an alternative architecture that leverages multiple threads to scale the capture, coordinating, and applying of change events read from LogMiner.
-This model mirrors a similar architecture used by Oracle for Oracle 23/26 XStream and GoldenGate.
+* Provide an alternative architecture that leverages multiple threads to scale the capture, processing, and emission of change events read from LogMiner.
+This model mirrors a similar architecture used by Oracle XStream and GoldenGate.
 * The implementation must be optional, and opt-in. Due to some of the limitations with `ChronicleQueue` and memory-mapped files, not every environment will be a good fit, and users need a fallback solution.
-Additionally, if the single-threaded model is kept, it can act as a fallback when things go wrong during the multithreaded development/feedback cycle of the feature.
+Additionally, if the single-threaded model is kept, it can act as a fallback when things go wrong during the multi-threaded development/feedback cycle of the feature.
+
+## Pipeline Modes
+
+The connector will support two mutually exclusive pipeline modes at runtime.
+
+### Single-Threaded Pipeline
+
+The existing buffered model, retained as-is. 
+Backs the in-flight transaction event buffer: holds full transaction events in memory until commit, equivalent to today's `TransactionCache`.
+
+| Backend                         | Notes                                        |
+|---------------------------------|----------------------------------------------|
+| Heap (memory)                   | Default, equivalent to today's memory buffer |
+| Infinispan (embedded or remote) | For existing Infinispan deployments          |
+| Ehcache                         | For existing Ehcache deployments             |
+
+### Multi-Threaded Pipeline
+
+The new parallel model introduced by this work. 
+`ChronicleQueue` serves as the durable event transport between threads. 
+The heap is used only for the lightweight SkipMap (Queue 1 offsets per transaction), which is trivially small and never needs to spill.
+
+| Backend         | Role                               |
+|-----------------|------------------------------------|
+| Chronicle Queue | Event transport (Queue 1, Queue 2) |
+| Heap            | SkipMap storage only               |
+
+**Deployment constraint:** Chronicle Queue requires a local POSIX filesystem.
+Network-attached filesystems (NFS, EFS, Azure Files, SAN) are not supported; see [Chronicle Queue Concerns](#concerns) for details.
+The connector may be able to validate the filesystem type at startup and fail fast with a clear error if an unsupported filesystem is detected.
 
 ## Proposed Architecture
+
+This section describes the fully realized target architecture.
+See [Implementation Phases](#implementation-phases) for the incremental delivery path.
 
 ### High-Level Flow
 
@@ -49,7 +82,7 @@ The two `ChronicleQueue` queue instances serve as durable, disk-backed inter-thr
 ### Thread 1 - Reader
 
 Thread 1 is a deliberately simple, fast database reader.
-Its only job is to execute the LogMiner SQL, iterate the `ResultSet`, mapping each row to a structured entry written to Queue 1.
+Its only job is to execute the LogMiner SQL, iterate the `ResultSet`, and map each row to a structured entry written to Queue 1.
 It contains no business logic.
 
 #### Behavior
@@ -66,12 +99,12 @@ If a transaction has previously been seen, by comparing its `XID` or `COMMIT_SCN
 If a transaction has not been seen previously, Debezium iterates all events, and dispatches them.
 If a transaction was mid-dispatch when the connector restarted, the algorithm uses the current `txId` and `txSeq` to dispatch only the portion of the transaction not sent previously.
 
-In the new multithreaded model, things remain quite similar.
-The reader thread (Thread 1) resumes reading from the `scn` value in the offsets.
-The thread records the current queue offset/index where it starts, and reprimes the queue just like the old approach reprimed the transaction buffer.
+In the multi-threaded model, the approach remains similar.
+Thread 1 resumes reading from the `scn` value in the offsets.
+It records the current queue offset/index where it starts, and reprimes the queue just as the old approach reprimed the transaction buffer.
 
-Ideally, it would be even better if we tracked per-event position, like XStream, which would allow the re-prime to be more efficient, only appending rows we had not previously seen, even for in-flight transactions.
-This would use the [last written high watermark](#last-written-high-watermark), to compare an event's position before it's appended to the queue, e.g.:
+Tracking per-event position as XStream does would allow the re-prime to be more efficient, appending only rows not previously seen, even for in-flight transactions.
+This would use the [last written high watermark](#last-written-high-watermark) to compare an event's position before it is appended to the queue, e.g.:
 
 ```java
 if (logMinerEventRow.getPosition() > lastWrittenWatermark) {
@@ -80,12 +113,12 @@ if (logMinerEventRow.getPosition() > lastWrittenWatermark) {
 }
 ```
 
-If we can achieve this, the `lastWrittenWatermark` would be tracked in the offsets and JMX metrics. 
+If achievable, the `lastWrittenWatermark` would be tracked in the offsets and JMX metrics.
 
 ### Queue 1 - LogMiner Raw Data
 
 Queue 1 is an immutable, append-only audit log of everything Oracle LogMiner has produced.
-It serves two primarily roles:
+It serves two primary roles:
 
 1. **Inter-thread transport**: Thread 2 will read from it to process transactions.
 2. **Audit Log**: This can be retained for debugging purposes or the ability to replay events.
@@ -95,7 +128,7 @@ It serves two primarily roles:
 Each entry in the queue contains a set of structured uncompressed metadata key/value pairs, followed by the `SQL_REDO` payload.
 
 The following are the uncompressed metadata fields.
-These fields are not compressed as they're read by Thread 2 to maximize Chronicle Queue pre-processing pass speeds.
+These fields are not compressed as they are read by Thread 2 to maximize Chronicle Queue pre-processing pass speeds.
 
 | Field            | Type     | Notes                                                          |
 |------------------|----------|----------------------------------------------------------------|
@@ -107,7 +140,7 @@ These fields are not compressed as they're read by Thread 2 to maximize Chronicl
 | `ROW_ID`         | `String` | The Oracle unique table row identifier assigned to the change  |
 | `CSF`            | `int`    | Continuation flag (1=next row merge with this row, 0=last row) |
 | `ROLLBACK`       | `int`    | Savepoint/Partial rollback flag                                |
-| `RS_ID`          | `String` | Rollback segement identifier                                   |
+| `RS_ID`          | `String` | Rollback segment identifier                                    |
 | `SSN`            | `int`    | SQL sequence number                                            |
 
 The following are the compressed fields.
@@ -156,8 +189,9 @@ private boolean isSafeToDelete(int cycle) {
 
 ### Thread 2 - Processor
 
+Thread 2 is the streaming change event source's `execute()` loop thread and the thread the runtime controls directly.
 Thread 2 owns all transaction processing logic.
-It is responsible for reading from Queue 1, reconstructs transactions by `XID` (transaction id), applies the multiple event consolidation into a single logical event as well as partial rollback discard rules, and writes the final reconstructed set of events for each transaction into Queue 2.
+It is responsible for reading from Queue 1, reconstructing transactions by `XID` (transaction id), applying event consolidation and partial rollback discard rules, and writing the final reconstructed set of events for each transaction into Queue 2.
 
 #### Transaction Index Lookup
 
@@ -180,14 +214,14 @@ Thread 2 seeks to the stored `BEGIN` index for the `XID`, reading the queue forw
 During this pass, only uncompressed metadata key/value pairs are used.
 This pass builds:
 
-1. `List<ThinIndex>`: a lightweight index of all events in the transaction
-2. `Set<Long> skipIndexes`: Set of indices from Queue 1 for the transaction to discard (e.g. partial rollbacks)
-3. `Map<LobKey, LobGroup>`: Grouping of LOB fragment sequences for merges.
+1. A lightweight ordered index of all events in the transaction, used as an iteration guide in Pass 2.
+2. The SkipMap: Queue 1 indices of events to discard, such as partial rollbacks and merged LOB fragments.
+3. A LOB merge map grouping LOB fragment sequences for assembly.
 
 **Pass 2: Assemble**
 
-Thread 2 iterates the `ThinIndex` list and for each retained event, seeks back to its `queueIndex` in Queue 1, decompresses the `SQL_REDO`, and writes the final event to Queue 2.
-Any event in `skipIndexes` are never decompressed.
+Thread 2 iterates the event index and for each retained event, seeks back to its Queue 1 position, decompresses the `SQL_REDO`, and writes the final event to Queue 2.
+Any event in the SkipMap is never decompressed.
 
 For LOB merge events, Pass 2 seeks to each fragment's `queueIndex`, decompresses and merges the fragment values.
 This simulates the logic that currently exists inside the `TransactionCommitConsumer` implementation.
@@ -198,12 +232,12 @@ Once all groupings are merged, the consolidated event is written to Queue 2.
 LogMiner emits events with `ROLLBACK=1` flag.
 This most often is when a savepoint is rolled back within a transaction, but can represent other scenarios like constraint violations, where Oracle records the original insert, and then reverts it due to the constraint.
 These events cancel earlier events that often have the same `ROW_ID`.
-Both the original and the rollback event are added to the `skipIndexes`, and are excluded from Queue 2, as well as the decompression of their respective `SQL_REDO` column.
+Both the original and the rollback event are added to the SkipMap, and are excluded from Queue 2, as well as the decompression of their respective `SQL_REDO` column.
 
 **Rollback Handling**
 
 When Thread 2 observes a `ROLLBACK` for a transaction, the entire transaction is discarded.
-In this case, the `xidToBeginIndex` entry for the transaction's `XID` is removed and nothing is written to Queue 2.
+In this case, the transaction's entry in the transaction index is removed and nothing is written to Queue 2.
 
 ### Queue 2 - Processed Events
 
@@ -222,23 +256,114 @@ The exact schema to be used here generally will align to contain all needed fiel
 
 ### Thread 3 - Emitter
 
-Thread 3 is purely an IO-bound producer thread.
+Thread 3 is purely an I/O-bound producer thread.
 It reads all processed events from Queue 2 and emits them as `SourceRecord` instances.
 All events are emitted from Queue 2 in transaction commit chronological order.
 
-The `commit_scn` represents the highest transaction's commit point for a given Oracle redo thread.
+The `commit_scn` tracks the highest commit SCN emitted for a given Oracle redo thread.
 Thread 3 is responsible for maintaining this offset state.
 
-There are several benefits by splitting the dispatch to the `EventDispatcher` to a separate thread:
+There are several benefits to isolating event dispatch in a dedicated thread:
 
-* Because the LogMiner implementation buffers all events for a transaction until the `COMMIT` is observed, this can create a high burst of events into the `ChangeEventQueue` that the `EventDispatcher` enqueues.
-If this queue is left to its default of 8k, or even sized to 16k or 32k, large transactions can quickly consume the entire buffer, placing back-pressure on the mining process.
-* When an event is dispatched to the `EventDispatcher`, this is also where the configured post processor implementations are called. 
-If the configuration uses a `ReselectPostProcessor`, this can easily cause latency/back-pressure due to the reselection of LOB columns.
+* In the current model, a large transaction's `COMMIT` causes a burst of events directly into the `ChangeEventQueue` on the same thread doing all processing.
+In the new model, Thread 3 drains Queue 2 at its own pace, so large-transaction bursts absorb into Queue 2's disk-backed buffer rather than exhausting the `ChangeEventQueue`'s bounded in-memory capacity.
+* Post-processor latency (e.g. a `ReselectPostProcessor` re-selecting LOB columns) no longer stalls Thread 2.
+Thread 3 owns all dispatch, so slow post-processors create back-pressure only against Queue 2, leaving Thread 1 and Thread 2 free to continue mining and processing.
 
 > [!NOTE]
-> It is possible that thread 3 could be eliminated by relying on a custom pluggable dequeue, see [DBZ-8968](https://github.com/debezium/debezium/pull/6468).
-> This would allow thread 2 to enqueue directly without concerns of back-pressure if the pluggable dequeue had reasonable size limits for a system's largest transactions.
+> It is possible that Thread 3 could be eliminated by relying on a custom pluggable dequeue, see [DBZ-8968](https://github.com/debezium/debezium/pull/6468).
+> This would allow Thread 2 to enqueue directly without concerns of back-pressure if the pluggable dequeue had reasonable size limits for a system's largest transactions.
+
+## Implementation Phases
+
+The multi-threaded pipeline is delivered incrementally. 
+Each phase leaves the connector in a fully working state. 
+The single-threaded pipeline remains operational throughout: phases apply only to the multi-threaded mode.
+
+### Phase 0: Current Architecture (Baseline)
+
+A single thread owns the entire pipeline: manages the LogMiner JDBC session and SCN window calculation, iterates the result set materializing `LogMinerEventRow` instances, buffers events into a per-transaction in-memory cache, and on `COMMIT` replays the buffer, filters events, and emits to the `EventDispatcher`. On `ROLLBACK`, the buffer is discarded.
+
+### Phase 1: Introduce `LogMinerClient`, Segregate LogMiner Reading
+
+**Goal:** Separate LogMiner result set iteration from event processing without changing any processing logic.
+
+`LogMinerClient` is introduced as the owner of all LogMiner JDBC interaction and started as Thread 1, a long-lived reader thread.
+Thread 1 places materialized `LogMinerEventRow` instances onto a bounded `LinkedBlockingQueue`.
+The main thread drains the queue and passes each row to the existing event processing logic, which is completely unchanged.
+On each poll timeout, the main thread checks for a fatal error cached by Thread 1 and rethrows if present.
+
+**Exit contract:** A working connector where LogMiner reading and event processing run on separate threads, communicating via `LinkedBlockingQueue`.
+
+### Phase 2: Introduce Queue 1 as Transport
+
+**Goal:** Replace the `LinkedBlockingQueue` with Chronicle Queue as the durable inter-thread transport.
+
+Thread 1 writes serialized `LogMinerEventRow` instances to Queue 1 instead of the `LinkedBlockingQueue`.
+The main thread tails Queue 1 via an `ExcerptTailer`.
+The `LinkedBlockingQueue` is retired.
+Back-pressure is now disk-space bounded rather than capacity bounded.
+
+**Exit contract:** A working connector where Queue 1 is established as the durable transport between Thread 1 and the main thread.
+
+### Phase 3: Thread 2 Owns the Tailer, SkipMap Replaces Transaction Buffer
+
+**Goal:** Introduce the new processing model, per-transaction Queue 1 replay with a SkipMap, in a single-threaded context before adding any parallelism.
+
+The main thread becomes Thread 2, the streaming change event source's `execute()` loop thread.
+As the thread the runtime controls directly, any fatal error Thread 2 rethrows propagates through `execute()` into the existing `errorHandler`.
+Thread 2 owns the Queue 1 coordinator tailer and continues to check Thread 1 for fatal errors on each tailer idle moment.
+On `BEGIN`, Thread 2 records the Queue 1 index for the transaction.
+On `COMMIT`, Thread 2 performs two passes over Queue 1: first building a `LogMinerTransactionFilter` (SkipMap), a set of Queue 1 offsets representing events to discard, then iterating the transaction a second time, skipping discarded offsets and emitting the remainder directly to the `EventDispatcher`.
+On `ROLLBACK`, the transaction's Queue 1 index is discarded with no further action.
+The in-memory transaction buffer (`TransactionCache`) is retired.
+
+**Key behavioral difference from today:** The connector no longer buffers entire transaction events in memory. 
+Only a lightweight SkipMap is held per transaction. Full event data lives in Queue 1 on disk.
+
+**Exit contract:** A working connector using the new SkipMap-based processing model, single-threaded on the processing side, with no in-memory event buffer.
+
+### Phase 4: Introduce Queue 2 and Thread 3
+
+**Goal:** Decouple event emission from transaction processing by introducing Queue 2 as a buffer between Thread 2 and the `EventDispatcher`.
+
+Thread 2 no longer emits directly to the `EventDispatcher`.
+After applying the SkipMap, Thread 2 writes emittable events to Queue 2.
+Thread 3 is introduced as a dedicated thread that tails Queue 2 and owns all emission to the `EventDispatcher`.
+Events are emitted strictly in the order they appear in Queue 2; no reordering logic is required.
+Thread 3 caches fatal errors in its own `AtomicReference`.
+Thread 2 now monitors both Thread 1 and Thread 3 for fatal errors on each Queue 1 tailer idle moment or Queue 2 write, rethrowing any non-null error into the existing `errorHandler`.
+
+**Exit contract:** A working connector with the full three-thread pipeline established: Thread 1 → Queue 1 → Thread 2 → Queue 2 → Thread 3 → `EventDispatcher`.
+
+### Phase 5: Thread 2 Fan-Out (Parallel Transaction Preprocessing)
+
+**Goal:** Parallelize transaction preprocessing within Thread 2 using a fork/join model while preserving commit chronological order for Queue 2 writes.
+
+The Thread 2 coordinator continues handling `BEGIN`/`COMMIT`/`ROLLBACK` detection.
+On `COMMIT`, the coordinator submits a replay task to a preprocessor thread pool of N workers.
+Each worker independently walks Queue 1 from the recorded `BEGIN` index using its own isolated per-transaction reader and builds the SkipMap.
+A sequencer sits between the preprocessor pool and the enqueue pool: workers deposit completed SkipMap results, and the sequencer drains in commit order, submitting enqueue tasks only when all prior committed transaction results have completed.
+The enqueue pool is a single thread that applies the SkipMap and writes emittable events to Queue 2 in commit order.
+
+**Invariants preserved:**
+- Queue 1 is append-only from Thread 1; all other threads only read it.
+- Queue 2 is always written in commit order; Thread 3 requires no reordering logic.
+- Memory pressure remains bounded; only lightweight SkipMap objects are held in the sequencer's pending map.
+
+**Exit contract:** The full parallel architecture is realized.
+Multiple transactions are preprocessed concurrently, but Queue 2 always receives events in commit order.
+
+### Architecture Summary
+
+| Phase     | T1               | Transport             | T2                                                         | Transport | T3                |
+|-----------|------------------|-----------------------|------------------------------------------------------------|-----------|-------------------|
+| 0 (today) | —                | —                     | Single thread (all)                                        | —         | —                 |
+| 1         | `LogMinerClient` | `LinkedBlockingQueue` | Main thread (all processing)                               | —         | —                 |
+| 2         | `LogMinerClient` | Queue 1               | Main thread (all processing)                               | —         | —                 |
+| 3         | `LogMinerClient` | Queue 1               | Coordinator + SkipMap (single-threaded)                    | direct    | `EventDispatcher` |
+| 4         | `LogMinerClient` | Queue 1               | Coordinator + SkipMap                                      | Queue 2   | Emitter           |
+| 5         | `LogMinerClient` | Queue 1               | Coordinator + preprocessor pool + sequencer + enqueue pool | Queue 2   | Emitter           |
 
 ## Chronicle Queue
 
@@ -272,7 +397,7 @@ As outlined in [this section](https://github.com/OpenHFT/Chronicle-Queue/?rgh-li
 
 #### JVM argument requirements
 
-`ChronicleQueue` does come with its own sets of concerns, most notably the requirement to set the following JVM arguments due to how the library uses various Sun-specific APIs:
+`ChronicleQueue` does come with its own set of concerns, most notably the requirement to set the following JVM arguments due to how the library uses various Sun-specific APIs:
 
 ```text
 --add-exports=java.base/jdk.internal.ref=ALL-UNNAMED
@@ -286,7 +411,7 @@ As outlined in [this section](https://github.com/OpenHFT/Chronicle-Queue/?rgh-li
 --add-opens=java.base/java.util=ALL-UNNAMED
 ```
 
-The library authors are already working on newer releases not to require these without any loss of performance.
+The library authors are working on newer releases that will eliminate these requirements without any loss of performance.
 
 ## Scalability
 
@@ -298,22 +423,62 @@ By using multiple tasks, this would allow the connector to take advantage of a K
 ### Fan-out per Pluggable Database
 
 Given that Oracle transactions cannot span across a pluggable database boundary, there is the possibility to use multiple threads/tasks to fan out the workload per PDB.
-In this setup, rather than using a single T1/T2/T3/Q1/Q2 set to read all changes for all pluggable databases, the connector could fan out to N-sets (where N is the number of captured PDBs).
+In this setup, rather than using a single pipeline instance (Thread 1, Thread 2, Thread 3, Queue 1, Queue 2) to read all changes for all pluggable databases, the connector could fan out to N instances (where N is the number of captured PDBs).
 
-While a fan-out of N readers increases the load on Oracle, it does provide the benefit to capture changes for PDBs in a way where high activity in one PDB does not cause latency for capturing changes to the other PDB.
+While a fan-out of N readers increases the load on Oracle, it ensures that high activity in one PDB does not cause latency when capturing changes for another.
 
-### Parallelization LogMiner reads
+### Parallelizing LogMiner Reads
 
-With the new log-count/size based mining algorithm, this introduces the potential possibility to scale the reader thread using a fan-out worker strategy during bursts.
+With the new log-count/size based mining algorithm, this introduces the potential to scale the reader thread using a fan-out worker strategy during bursts.
 There are some concerns with long-running transactions that need to be dealt with, but this architecture lends itself to scaling independent isolated portions of the pipeline.
 
 ## Open Items
 
-TBD
+* **Filesystem validation at startup:** The connector should ideally detect unsupported Chronicle Queue filesystems (NFS, EFS, Azure Files, SAN) at startup and fail fast with a clear error.
+It is not yet confirmed whether reliable filesystem-type detection is feasible across all target environments, or whether we must rely on Chronicle Queue failing at first write.
+
+* **Last written high watermark feasibility:** The Thread 1 high-watermark tracking section describes an aspirational per-event position mechanism.
+Whether a stable, unique per-event position can be derived from the available LogMiner fields (CSCN, SCN, XID, SSN, RBA; see [Appendix](#last-written-high-watermark)) needs to be confirmed before this mechanism can be relied upon for restart deduplication.
+
+* **Queue 2 entry schema:** The Queue 2 entry schema is not yet fully defined.
+It is described in general terms as containing the fields needed to populate the Debezium `source` block and the `before`/`after` event payloads.
+The exact field set and serialization format need to be specified.
+
+* **Phase 5 preprocessor pool sizing:** The Phase 5 preprocessor thread pool has N workers, but the default value of N, its configuration mechanism, and how it interacts with long-running transactions that could starve the sequencer are not yet defined.
+
+* **Graceful shutdown sequence:** The document addresses error propagation but not orderly shutdown.
+When the connector is stopped or rebalanced, the three-thread pipeline needs a defined drain-and-close sequence: Thread 1 stops mining, Thread 2 finishes in-flight transaction processing, Thread 3 completes pending Queue 2 emission, and offsets are flushed before control is returned to the runtime.
+
+* **Metrics and JMX exposure:** New metrics for the multi-threaded pipeline are not yet defined.
+Candidates include: Queue 1 write lag, Queue 2 write lag, preprocessor pool queue depth, SkipMap size per in-flight transaction, and per-phase throughput counters.
 
 ## Appendix
 
 ### Last Written High Watermark
 
 Oracle's system change number (SCN) is not unique, and can be assigned to two or more changes.
-In order, to create a high-watermark, one must use a concatenation of multiple values, that include things like the commit scn (CSCN), event scn (SCN), transaction id (XID), sequence within the transaction (SSN), and the relative byte access (RBA) in the transaction logs. 
+In order to create a high-watermark, one must use a concatenation of multiple values that include things like the commit SCN (CSCN), event SCN (SCN), transaction id (XID), sequence within the transaction (SSN), and the relative byte access (RBA) in the transaction logs.
+
+### SkipMap
+
+The SkipMap is a set of Queue 1 indices representing events within a committed transaction that should be discarded rather than emitted.
+It is built during Thread 2's Pass 1 (the metadata-only scan of a transaction in Queue 1) and consumed during Pass 2 (the full decompression and assembly pass).
+
+The SkipMap replaces the discard logic that the current single-threaded model applies against the in-memory transaction buffer at commit time.
+In the multi-threaded model, events remain on disk in Queue 1; the SkipMap records only the Queue 1 indices of events to skip, keeping heap usage trivially small regardless of transaction size.
+
+Events are added to the SkipMap when:
+
+* A `ROLLBACK=1` flag is observed (partial rollback or savepoint), which cancels both the rollback event and the earlier event it targets (matched by `ROW_ID`).
+* LOB fragment continuation rows are merged into a parent event and should not be emitted independently.
+
+### Commit Chronological Order
+
+Oracle assigns a system change number (SCN) to each committed transaction at the point of commit.
+Multiple transactions can share the same commit SCN, particularly in multi-threaded redo environments where transactions on different redo threads commit concurrently.
+
+For this reason, the design does not rely on commit SCN alone as a total ordering key.
+Instead, events are ordered by commit chronological order: the sequence in which transactions are committed as observed in the LogMiner output.
+This is the ordering the Phase 5 sequencer enforces when draining SkipMap results to the enqueue pool, and the ordering Thread 3 relies on when emitting events from Queue 2.
+
+Maintaining commit chronological order guarantees that events are emitted in the same relative sequence as the original database commits, which is required for correct downstream consumption regardless of how many transactions share a given commit SCN.
