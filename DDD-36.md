@@ -7,7 +7,7 @@ The current implementation is single-threaded, combining database reading, event
 But this approach for LogMiner leads to heap pressure from large in-flight transactions and limits throughput by coupling IO bound and CPU bound work together.
 
 The proposed architecture splits the pipeline into three logical threads, connected by two `ChronicleQueue` instances, both using disk-backed memory-mapped files for inter-thread communication.
-This eliminates heap exhaustion for large transactions while improving throughput, observability, and scalability.
+This eliminates heap exhaustion for large transactions while improving throughput and scalability.
 
 ## Current Architecture
 
@@ -25,6 +25,15 @@ While the connector does have off-heap buffer options using Infinispan and Ehcac
 * **Coupled I/O**: The database reader stalls while processing and emitting events, reducing the LogMiner query throughput.
 * **No audit trail**: All LogMiner output is discarded after processing, with no ability to replay and/or inspect what we originally mined.
 This becomes even more important as Oracle often only retains logs for a limited period of time (sometimes hours).
+
+## Goal
+
+The goal of this proposal is:
+
+* Provide an alternative architecture that leverages multiple threads to scale the capture, coordinating, and applying of change events read from LogMiner.
+This model mirrors a similar architecture used by Oracle for Oracle 23/26 XStream and GoldenGate.
+* The implementation must be optional, and opt-in. Due to some of the limitations with `ChronicleQueue` and memory-mapped files, not every environment will be a good fit, and users need a fallback solution.
+Additionally, if the single-threaded model is kept, it can act as a fallback when things go wrong during the multithreaded development/feedback cycle of the feature.
 
 ## Proposed Architecture
 
@@ -47,13 +56,22 @@ It contains no business logic.
 
 * Executes LogMiner SQL against `V$LOGMNR_CONTENTS`
 * Maps each JDBC row to an entry in Queue 1 (see below)
-* Tracks Queue 1's last written high watermark (TBD) to avoid duplicate writes on restarts or re-reads
+* Tracks Queue 1's [last written high watermark](#last-written-high-watermark) to avoid duplicate writes on restarts or re-reads
 * Returns to querying the next LogMiner batch as fast as possible
 
 #### High-watermark tracking
 
-Because LogMiner re-reads from the eldest in-progress transaction's SCN, Thread 1 will often re-observe portions of transactions it has already written to Queue 1.
-The `last_written_watermark` is persisted in Debezium's offset and used to skip rows already present in Queue 1.
+In the current architecture, Debezium resumes from the `scn` value in the offsets, which is the eldest in-flight transaction that was previously buffered, and rebuffers changes from this point forward.
+If a transaction has previously been seen, by comparing its `XID` or `COMMIT_SCN` values to information in the offsets, the transaction is discarded.
+If a transaction has not been seen previously, Debezium iterates all events, and dispatches them.
+If a transaction was mid-dispatch when the connector restarted, the algorithm uses the current `txId` and `txSeq` to dispatch only the portion of the transaction not sent previously.
+
+In the new multithreaded model, things remain quite similar.
+The reader thread (Thread 1) resumes reading from the `scn` value in the offsets.
+The thread records the current queue offset/index where it starts, and reprimes the queue just like the old approach reprimed the transaction buffer.
+
+Ideally, it would be even better if we tracked per-event position, like XStream, which would allow the re-prime to be more efficient, only appending rows we had not previously seen, even for in-flight transactions.
+This would use the [last written high watermark](#last-written-high-watermark), to compare an event's position before it's appended to the queue, e.g.:
 
 ```java
 if (logMinerEventRow.getPosition() > lastWrittenWatermark) {
@@ -61,6 +79,8 @@ if (logMinerEventRow.getPosition() > lastWrittenWatermark) {
   updateLastWrittenWatermark(logMinerEventRow);
 }
 ```
+
+If we can achieve this, the `lastWrittenWatermark` would be tracked in the offsets and JMX metrics. 
 
 ### Queue 1 - LogMiner Raw Data
 
@@ -209,7 +229,22 @@ All events are emitted from Queue 2 in transaction commit chronological order.
 The `commit_scn` represents the highest transaction's commit point for a given Oracle redo thread.
 Thread 3 is responsible for maintaining this offset state.
 
+There are several benefits by splitting the dispatch to the `EventDispatcher` to a separate thread:
+
+* Because the LogMiner implementation buffers all events for a transaction until the `COMMIT` is observed, this can create a high burst of events into the `ChangeEventQueue` that the `EventDispatcher` enqueues.
+If this queue is left to its default of 8k, or even sized to 16k or 32k, large transactions can quickly consume the entire buffer, placing back-pressure on the mining process.
+* When an event is dispatched to the `EventDispatcher`, this is also where the configured post processor implementations are called. 
+If the configuration uses a `ReselectPostProcessor`, this can easily cause latency/back-pressure due to the reselection of LOB columns.
+
+> [!NOTE]
+> It is possible that thread 3 could be eliminated by relying on a custom pluggable dequeue, see [DBZ-8968](https://github.com/debezium/debezium/pull/6468).
+> This would allow thread 2 to enqueue directly without concerns of back-pressure if the pluggable dequeue had reasonable size limits for a system's largest transactions.
+
 ## Chronicle Queue
+
+> [!IMPORTANT]
+> While this document explicitly discusses `ChronicleQueue` as a first-class citizen in the design, it should be treated as an implementation detail.
+> The solution should be extendable, supporting other potential similar solutions that could be leveraged where memory-mapped files aren't possible.
 
 ### Configuration
 
@@ -229,6 +264,13 @@ Wrapping multiple `ResultSet` rows in a single `writeDocument` will exhaust the 
 * **Block Size**: A 64MB block size by default. This should be tunable based on observed average entry size.
 
 ### Concerns
+
+#### Requires memory-mapped filesystem support
+
+`ChronicleQueue` uses memory-mapped files, and these are not possible or reliable across every filesystem. 
+As outlined in [this section](https://github.com/OpenHFT/Chronicle-Queue/?rgh-link-date=2026-04-10T12%3A14%3A21Z#usage), this prevents the use of things like NFS, AFS, SAN-based, or other storages that use network-based file systems.
+
+#### JVM argument requirements
 
 `ChronicleQueue` does come with its own sets of concerns, most notably the requirement to set the following JVM arguments due to how the library uses various Sun-specific APIs:
 
@@ -260,7 +302,18 @@ In this setup, rather than using a single T1/T2/T3/Q1/Q2 set to read all changes
 
 While a fan-out of N readers increases the load on Oracle, it does provide the benefit to capture changes for PDBs in a way where high activity in one PDB does not cause latency for capturing changes to the other PDB.
 
+### Parallelization LogMiner reads
+
+With the new log-count/size based mining algorithm, this introduces the potential possibility to scale the reader thread using a fan-out worker strategy during bursts.
+There are some concerns with long-running transactions that need to be dealt with, but this architecture lends itself to scaling independent isolated portions of the pipeline.
+
 ## Open Items
 
 TBD
 
+## Appendix
+
+### Last Written High Watermark
+
+Oracle's system change number (SCN) is not unique, and can be assigned to two or more changes.
+In order, to create a high-watermark, one must use a concatenation of multiple values, that include things like the commit scn (CSCN), event scn (SCN), transaction id (XID), sequence within the transaction (SSN), and the relative byte access (RBA) in the transaction logs. 
