@@ -10,3 +10,4 @@ When creating a new document, please add it to the list below.
 * [DDD-3](DDD-3.md): Incremental snapshotting
 * [DDD-7](DDD-7.md): Asynchronous Debezium embedded engine
 * [DDD-9](DDD-9.md): Oracle unbuffered adapter
+* [DDD-40](DDD-40.md): Debezium CLI — A Unified Command-Line Interface for CDC Pipeline Lifecycle Management
