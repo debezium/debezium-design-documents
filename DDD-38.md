@@ -79,6 +79,21 @@ graph TB
     style DBZ fill:#f8bbd0,stroke:#c2185b,stroke-width:2px,color:#000000
 ```
 
+Following the **Data flow:**
+1. Debezium Server (with Otel Agent) exports metrics to Otel Collector via OTLP
+2. Otel Collector processes and exposes metrics via Prometheus exporter
+3. Prometheus scrapes Otel Collector's `/metrics` endpoint
+4. User navigates to pipeline monitoring page in Stage UI
+5. Stage UI polls: `GET /api/v1/monitoring/panels/{panelId}/query?pipeline_id=X&start=...&end=...`
+6. Conductor checks cache for recent query results
+7. If cache miss: queries Prometheus with `rate(debezium_metrics_events_filtered{service_name="X"}[5m])`
+8. Prometheus returns time-series data
+9. Conductor transforms to compact format and caches with TTL
+10. Response sent to UI with Cache-Control headers
+11. Browser caches response to avoid redundant requests
+12. UI renders time-series chart
+
+
 ### Component 1: OpenTelemetry Java Agent on Debezium Server
 
 #### Built-in Support
@@ -816,7 +831,7 @@ The current implementation uses the **OpenTelemetry Java Agent** to collect metr
 
 **Phase 2 (Future):** OpenTelemetry SDK → Otel Collector → Prometheus
 - Debezium Server integrates OpenTelemetry SDK directly
-- Native instrumentation replaces JMX MBeans
+- Use native instrumentation instead of JMX MBeans
 - Better performance (no reflection overhead)
 - Richer context propagation (traces, logs correlation)
 - Custom metrics beyond what JMX provides
