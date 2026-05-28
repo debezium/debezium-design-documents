@@ -6,7 +6,7 @@ This document describes the design and architecture of **PyDebeziumAI**, a Pytho
 
 Modern Generative AI and Large Language Model (LLM) applications rely on Retrieval-Augmented Generation (RAG) to ground model responses in dynamic domain data. Relational databases store the source of truth for these applications, but traditional methods for syncing database state to vector search indexes have significant limitations:
 
-1. **Periodic Batch Refreshes / Polling**: Querying the database periodically is slow, resource-intensive, and introduces sync lag. During the lag window, the LLM retrieves stale context, leading to hallucinations.
+1. **Periodic Batch Refreshes / Polling**: Querying the database periodically is slow, resource-intensive, and introduces sync lag. During the lag window, the LLM retrieves stale context, leading to outputs based on outdated data, or hallucinations if the requested entity was deleted in the database but still exists in the vector store.
 2. **Double Writes**: Forcing the application layer to write to both the database and the vector store is error-prone, violates transactional safety, and makes recovery from partial failures difficult.
 3. **Complex CDC Configurations**: Existing CDC-to-AI pipelines require heavy infrastructure (e.g., Kafka, Debezium Server, Kafka Connect, Spark/Flink, and vector ingestion jobs), which is complex to manage for local developers or lighter Python microservices.
 
@@ -108,7 +108,7 @@ Converts a canonical database row event into a LangChain `Document`.
 #### 2.4 Synchronization Layer (`SyncManager`)
 Executes vector store commands according to CDC transaction operation types:
 - **`c` (Create) and `r` (Snapshot)**: Performs an `adapter.upsert()`.
-- **`u` (Update)**: Calls `adapter.delete()` on the document ID, followed by `adapter.upsert()`. This ensures that if metadata changes significantly, stale embeddings are completely purged.
+- **`u` (Update)**: Calls `adapter.delete()` on the document ID, followed by `adapter.upsert()`. This sequential delete-then-upsert guarantees that if columns are updated to NULL or metadata fields are removed, the stale fields are completely purged from the vector index rather than merged/retained (which is the default merge behavior of upsert/update APIs in many vector databases like Chroma or Milvus).
 - **`d` (Delete)**: Performs a `adapter.delete()`. If `soft_delete=True`, it marks the metadata field `_is_deleted` as `True` instead of a hard removal.
 - **Retry Mechanics**: When operations fail due to connection dropouts, `SyncManager` invokes a retry policy configured with exponential backoff and randomized jitter. Events failing after maximum retries are redirected to a thread-safe `DeadLetterQueue` (DLQ).
 
@@ -146,7 +146,7 @@ We ship official implementations for **Chroma**, **PGVector**, and **Milvus**.
 - **Eventual Consistency**: The system guarantees that the vector store eventually mirrors the source database. Operations are processed sequentially, and ordering guarantees are preserved per primary-key stream and connector partition to ensure that updates to the same logical row are never applied out-of-order.
 - **Out-of-Order Handling**: Deduplication and synchronization are anchored on the unique primary key mapping strategy (`TablePkIdStrategy`). Because updates are idempotent upserts on the vector store, out-of-order deliveries resolve to the latest database state.
 - **Atomic Updates**: To ensure that changing a database row does not leave dangling metadata keys or duplicate embeddings in the vector index, updates execute a sequential delete-then-upsert pipeline on the vector store adapter.
-- **Delete-then-Upsert Failure Recovery**: If the subsequent upsert operation fails after a delete succeeds, the document temporarily disappears from the vector database index. To close this consistency gap, the failed event is redirected to the `DeadLetterQueue` (DLQ), retaining the message sequence context. Replay workers read from the DLQ to retry the upsert, thereby restoring consistency without permanent data loss.
+- **Delete-then-Upsert Failure Recovery**: If the subsequent upsert operation fails after a delete succeeds, the document temporarily disappears from the vector database index. To close this consistency gap, the failed event is redirected to the `DeadLetterQueue` (DLQ), retaining the message sequence context. To prevent out-of-order execution (e.g., a replay worker applying a retry event *after* a newer update has already been applied by the main worker), processing of subsequent update events for the affected primary key is blocked/paused while that key is in the retry/DLQ cycle. Replay workers retry the upsert sequentially, restoring consistency without race conditions or permanent data loss.
 - **Soft Delete Behavior**: Configured through the LiveContext parameter `soft_delete`. If enabled (`soft_delete=True`), Debezium delete operations (`op: "d"`) translate to a metadata update setting `_is_deleted: true` rather than a hard removal.
 
 ---
