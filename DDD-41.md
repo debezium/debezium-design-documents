@@ -4,341 +4,427 @@
 
 The Debezium Platform currently supports pipeline deployment exclusively through the Kubernetes-based Debezium Operator. While this works well for teams running Kubernetes, a significant portion of production environments operate on bare-metal servers, cloud VMs (EC2, Azure VMs), and on-premise machines that do not run Kubernetes.
 
-This proposal introduces a host-based deployment path as a first-class, parallel alternative to the existing Kubernetes path. By implementing a second `EnvironmentController` that deploys Debezium Server containers on remote hosts via SSH and a lightweight host-side agent, the Platform becomes environment-agnostic.
+This proposal introduces a host-based deployment path as a first-class alternative to the existing Kubernetes path. By implementing an `EnvironmentController` that deploys Debezium Server containers on remote hosts via Ansible and a lightweight host-side agent, the Platform becomes environment-agnostic.
+
+**Key design philosophy:** Users focus on pipeline design, not on deployment infrastructure. The host management is fully automated — a sysadmin provides an SSH config file, the Platform watches it, provisions hosts automatically via Ansible, and deploys pipelines using a round-robin strategy with zero user intervention on host selection.
+
+---
 
 ## Proposed Changes
 
 ### 1. High-Level Architecture
 
-Example of host-based pipeline deployment for the Debezium Platform
-<img src="DDD-41/hostPipelineDeploy.png" style="width: 70%; height: 60%;" alt="Example of host-based pipeline deployment for the Debezium Platform" />
+The diagram below shows the two deployment paths (left side) and the complete request flow from user click to container running (right side):
+
+![High-Level System Architecture and Complete Request Flow](DDD-41/hostPipelineDeploy.png)
 
 **Key architectural decisions:**
-- **Zero direct SSH execution in Java:** SSH connectivity is handled entirely by Ansible under the hood during the provisioning phase. The Conductor backend never makes direct SSH connections or manages SSH sessions in Java.
-- **HTTP REST for Lifecycle:** All ongoing pipeline lifecycle operations (deploy, undeploy, start, stop, logs) are executed via lightweight, non-blocking HTTP REST calls to the Agent running on the remote host.
-- **CDI Routing:** The `RoutingEnvironmentController` is the single `@ApplicationScoped` bean that CDI injects. It dynamically delegates to either the operator or host sub-controller depending on whether the pipeline is associated with a host deployment.
+- **Global deployment mode:** The Platform runs in exactly one mode at a time — either `operator` (Kubernetes) or `host` (bare-metal). This is selected at startup via a runtime configuration property, not per-pipeline.
+- **SSH Config as source of truth:** Hosts are declared through a standard OpenSSH `~/.ssh/config` file mounted into the Conductor. No UI or REST API is needed for host registration.
+- **File Watcher for auto-discovery:** A background Java `WatchService` monitors the SSH config file for changes. When hosts are added, modified, or removed, provisioning is triggered automatically.
+- **Round-Robin scheduling:** When deploying a pipeline, the Platform automatically selects a `READY` host using a least-loaded round-robin strategy. Users never choose which host to deploy to.
+- **Zero direct SSH in Java:** SSH connectivity is handled entirely by Ansible during provisioning. The Conductor never opens SSH sessions in Java code.
+- **HTTP REST for lifecycle:** All ongoing pipeline lifecycle operations (deploy, undeploy, start, stop, logs) are executed via lightweight HTTP REST calls to the Agent running on the remote host.
 
+---
 
-### 2. Deployment Model Selection
+### 2. Deployment Mode Selection
 
-The Platform's goal is to let users focus on pipeline design, not on how things are deployed. Therefore:
+The Platform operates in one of two mutually exclusive modes, configured globally at startup:
 
-- **Pipeline design** remains unchanged — users configure source, destination, transforms as today
-- **Deployment model selection** happens at **deploy time**, not at design time
-- When deploying, the user selects either:
-  - **Kubernetes** (default, existing behavior)
-  - **Bare Metal** → selects a registered host with `READY` provisioning status
+```properties
+# application.properties
+debezium.deployment.mode=host   # or "operator" (default)
+```
 
-The host management section in the UI is only displayed when the deployment mode is bare-metal.
+| Mode | When to use | What it activates |
+|---|---|---|
+| `operator` | Platform is running inside Kubernetes | `OperatorEnvironmentController` (existing behavior, unchanged) |
+| `host` | Platform manages bare-metal/VM hosts | `HostEnvironmentController` (new) |
 
-### 3. Core Abstractions — Routing
+**Why global mode instead of per-pipeline routing:**
+- The Platform deployment itself determines available infrastructure. If the platform runs on Kubernetes, it has access to the K8s API. If it runs as a Docker container on bare-metal, it has access to the mounted SSH config.
+- A single mode eliminates the need for a complex routing controller that dynamically delegates per-pipeline.
+- This aligns with the Platform's core promise that users focus on pipeline design, not deployment.
 
-#### 3.1 The CDI Challenge
+#### 2.1 CDI Bean Selection via `@LookupIfProperty`
 
-The `PipelineConsumer` and `VaultConsumer` each receive an `EnvironmentController` via constructor injection. Currently, `OperatorEnvironmentController` is the only `@ApplicationScoped` bean implementing this interface. Adding a second implementation would cause CDI ambiguity.
+The deployment mode property determines which `EnvironmentController` bean is active at runtime. Quarkus CDI provides `@LookupIfProperty` for runtime-evaluated bean selection — both bean classes remain on the classpath in a single compiled image, enabling a **"build once, deploy anywhere"** model:
 
-#### 3.2 Solution: RoutingEnvironmentController
+```java
+@ApplicationScoped
+@LookupIfProperty(name = "debezium.deployment.mode", stringValue = "operator", lookupIfMissing = true)
+@Named("operator-environment-controller")
+public class OperatorEnvironmentController implements EnvironmentController {
+    // Existing code — unchanged
+}
+```
 
-A new `RoutingEnvironmentController` becomes the single `@ApplicationScoped` `EnvironmentController` bean. It wraps both `OperatorEnvironmentController` and `HostEnvironmentController` (both changed to `@Dependent`) and delegates based on whether a `HostDeploymentEntity` exists for the given pipeline.
+```java
+@ApplicationScoped
+@LookupIfProperty(name = "debezium.deployment.mode", stringValue = "host")
+@Named("host-environment-controller")
+public class HostEnvironmentController implements EnvironmentController {
+    // New implementation
+}
+```
 
-The existing `PipelineService.environmentController()` method (which currently uses `@All List<EnvironmentController>` and has a `TODO` comment about only supporting operator) will be simplified to inject the `RoutingEnvironmentController` directly.
+When `debezium.deployment.mode=operator` (or is absent), only `OperatorEnvironmentController` is resolved during programmatic lookup. When `debezium.deployment.mode=host`, only `HostEnvironmentController` is resolved. CDI never sees ambiguity because only one implementation is active during any `Instance<T>` lookup.
 
-**Important:** The `OperatorEnvironmentController` already uses `@Named("operator-environment-controller")` — its scope will be changed from `@ApplicationScoped` to `@Dependent` so that only the routing controller is discoverable as the default bean.
+The same Docker image can be promoted from staging to production, and the deployment mode is switched via an environment variable: `docker run -e DEBEZIUM_DEPLOYMENT_MODE=host platform-conductor:nightly`.
+
+**Impact on existing code:** `PipelineService` switches from `@All List<EnvironmentController>` to `Instance<EnvironmentController>.get()` for the active bean — a minimal change.
+
+---
+
+### 3. Host Discovery via SSH Config File Watcher
+
+The diagram below shows the SSH config file watcher flow (left side) and how Ansible uses the SSH config for host provisioning (right side):
+
+![SSH Config File Watcher Flow and Ansible SSH Config Usage](DDD-41/_SSHConfigFileFlow.png)
+
+Instead of building a UI screen and REST API for host registration, the Platform uses a **file-based, automated discovery** model.
+
+#### 3.1 How It Works
+
+1. **The sysadmin** creates a standard OpenSSH config file listing all target hosts:
+
+```
+Host db-server-1
+    HostName 192.168.1.10
+    User ubuntu
+    Port 22
+    IdentityFile ~/.ssh/db-server-1.key
+
+Host db-server-2
+    HostName 192.168.1.20
+    User deploy
+    Port 2222
+    IdentityFile ~/.ssh/db-server-2.key
+```
+
+2. **The sysadmin** mounts this file into the Conductor container at `~/.ssh/config`:
+   - **Kubernetes:** Mount a Secret as a volume with `defaultMode: 256` (octal `0400`) to enforce strict SSH key permissions
+   - **Docker Compose:** Bind mount: `-v /path/to/ssh-config:/home/jboss/.ssh/config:ro` (ensure host-side key permissions are `0600`)
+   - **Development:** Place at `~/.ssh/config` on the development machine
+
+3. **The SSH private key files** referenced by `IdentityFile` are also mounted into the container's `~/.ssh/` directory. **Critical:** Keys must have strict permissions (`0400` or `0600`). OpenSSH rejects keys with more permissive modes (e.g., `0644`) with a fatal `"Permissions are too open"` error.
+
+4. **On startup**, the `SshConfigWatcherService` reads and parses the SSH config file, validates SSH key file permissions, and creates `HostStatusEntity` records in the database for each discovered host.
+
+5. **A Java `WatchService`** continues monitoring the file for changes. When the sysadmin edits the file, the watcher detects the modification and triggers the appropriate action:
+   - **New host added** → Create `HostStatusEntity` with status `PENDING`, trigger Ansible provisioning
+   - **Host removed** → Mark `HostStatusEntity` as `REMOVED`, undeploy any pipelines from that host
+   - **Host modified** (e.g., IP changed) → Re-provision via Ansible
+
+#### 3.2 SSH Config File Parser
+
+Parsing is implemented as a lightweight, zero-dependency Java class (`SshConfigParser`) using `BufferedReader` line-by-line parsing. No external SSH library (JSch, Mina-SSHD) is needed because we only parse the config file format — we never open SSH connections from Java.
+
+Key parsing rules per the ssh_config(5) specification:
+- Keywords are case-insensitive, arguments are case-sensitive
+- Both whitespace and `=` are valid delimiters (e.g., `Port 22` and `Port=22`)
+- Inline comments supported (OpenSSH 8.5+)
+- Quoted values for paths with spaces
+- `Host *` and `Host db-?` wildcard entries are skipped
+
+#### 3.3 SshConfigWatcherService
+
+The watcher runs as a background thread on application startup, using the Java NIO `WatchService` API:
+
+- Monitors the **parent directory** (Java NIO limitation — `WatchService` operates on directories).
+- Filters events to only react to changes in the specific config file.
+- Watches for `ENTRY_MODIFY`, `ENTRY_CREATE`, and `ENTRY_DELETE` — Kubernetes ConfigMap volume mounts use an atomic symlink-swap mechanism that triggers `ENTRY_CREATE`/`ENTRY_DELETE` rather than `ENTRY_MODIFY`.
+- A **2-second debounce delay** prevents unnecessary Ansible runs when the sysadmin is making multiple rapid edits.
+- `OVERFLOW` events trigger a full reconciliation as a safety measure.
+- A **`@Scheduled` periodic fallback (every 5 minutes)** re-reads the file regardless of events, catching events that WatchService may miss on NFS mounts or Kubernetes.
+
+---
 
 ### 4. Data Model
 
-Two new JPA entities following existing patterns (`PipelineEntity`, `VaultEntity`):
+#### 4.1 HostStatusEntity
 
-#### 4.1 HostTargetEntity
-
-Represents a registered remote host:
+Since the SSH config file is the source of truth for host connection details (IP, user, key), the database only tracks **provisioning status** and **runtime metadata**:
 
 | Field | Type | Description |
 |---|---|---|
 | `id` | `Long` | Primary key (sequence-generated) |
-| `name` | `String` | Unique name for the host |
-| `description` | `String` | Optional description |
-| `hostname` | `String` | Host address (IP or DNS) |
-| `port` | `int` | SSH port (default: 22) |
-| `username` | `String` | SSH username |
-| `sshKeyPath` | `String` | Path to mounted SSH private key file (e.g., `/etc/debezium/ssh-keys/host-1-key`) |
-| `agentPort` | `int` | Port where the Agent listens on the remote host (default: 8090) |
-| `agentToken` | `String` | Secure bearer token generated by Conductor during registration for Agent API authentication |
-| `provisioningStatus` | `Enum` | `PENDING`, `PROVISIONING`, `READY`, `FAILED` |
-| `provisioningReport` | `JSON` | Provisioning check results |
+| `sshAlias` | `String` | Unique — the `Host` alias from the SSH config file (e.g., `db-server-1`) |
+| `hostname` | `String` | Cached `HostName` value from SSH config (for display/reference) |
+| `provisioningStatus` | `Enum` | `PENDING`, `PROVISIONING`, `READY`, `FAILED`, `REMOVED` |
+| `provisioningReport` | `JSON` | Ansible output, error messages |
+| `agentPort` | `int` | Port where the Host Agent listens (default: 8090) |
+| `agentToken` | `String` | Bearer token generated during provisioning for Agent API auth |
+| `lastCheckedAt` | `Timestamp` | Last time the watcher verified this host |
 
+**Note:** There is intentionally no `pipelineCount` column. Host load is calculated dynamically via a `COUNT` query on the `host_deployment` table inside a pessimistic lock. This prevents stale counter drift when concurrent deploy/undeploy operations occur.
 
 #### 4.2 HostDeploymentEntity
 
-Links a pipeline to a host for deployment:
+Links a pipeline to a specific host. This entity is created when the scheduling logic assigns a pipeline to a host:
 
 | Field | Type | Description |
 |---|---|---|
 | `id` | `Long` | Primary key |
-| `pipeline` | `PipelineEntity` | FK to pipeline (Many-to-One) |
-| `hostTarget` | `HostTargetEntity` | FK to host (Many-to-One) |
-| `containerName` | `String` | Docker container name |
+| `pipeline` | `PipelineEntity` | FK to pipeline (Many-to-One, `UNIQUE` constraint — one active deployment per pipeline) |
+| `hostStatus` | `HostStatusEntity` | FK to host status (Many-to-One) |
+| `containerName` | `String` | Docker container name on the remote host |
 | `imageVersion` | `String` | Debezium Server Docker image version |
-| `serverPort` | `int` | Per-pipeline HTTP port (avoids 8080 conflicts) |
+| `serverPort` | `int` | Unique port allocated on the host (avoids TCP conflicts) |
 | `deploymentStatus` | `Enum` | `DEPLOYING`, `RUNNING`, `STOPPED`, `FAILED`, `CONFIG_DRIFT` |
 | `configHash` | `String` | SHA-256 of deployed `application.properties` for drift detection |
 
-#### 4.3 Database Migration
+When a pipeline is undeployed, the `HostDeploymentEntity` record is **deleted** (not soft-deleted), enabling clean re-deployment and port reuse.
 
-A new Flyway migration creates the `host_target` and `host_deployment` tables with appropriate sequences, foreign keys to `pipeline`, and indexes.
+---
 
-### 5. SSH Key Pair Management
+### 5. SSH Key Management
 
-SSH private keys for connecting to remote hosts are managed using **volume mounts**, not stored in the database.
+SSH private keys are managed through **volume mounts** — they are never stored in the database.
 
-#### 5.1 How It Works
+- The sysadmin mounts the SSH key directory into the Conductor container's `~/.ssh/` directory.
+- The SSH config file references these keys using `IdentityFile ~/.ssh/<key-filename>`.
+- Because Ansible natively uses OpenSSH, it automatically reads `~/.ssh/config` and resolves the correct private key for each host — no explicit `--private-key` flag needed.
 
-1. The user creates a file (or Kubernetes Secret) containing the SSH private key.
-2. The file is mounted into the Conductor pod at a known path (e.g., `/etc/debezium/ssh-keys/`).
-3. When registering a host via the REST API, the user provides the **file path** of the mounted key (e.g., `/etc/debezium/ssh-keys/host-1-key`).
-4. `HostTargetEntity` stores only this **path reference**, not the raw key content.
-5. During provisioning, the `HostProvisioningService` invokes the Ansible process, passing the private key path directly as a parameter (`--private-key`). Ansible handles the secure SSH key loading and authentication natively.
+**SSH key permission enforcement:**
+- **Kubernetes:** Mount SSH keys via `Secret` with `defaultMode: 256` (decimal for octal `0400`). `ConfigMap` defaults to `0644`, which OpenSSH rejects.
+- **Docker Compose:** Ensure host-side permissions: `chmod 600 ~/.ssh/*.key` before bind-mounting.
+- The `SshConfigWatcherService` validates key file permissions on startup and logs a clear error if keys are too permissive.
 
+**Security:** Key material never touches the database. Ansible reads keys natively — no SSH libraries in Java code.
 
-#### 5.2 Deployment Scenarios
-
-| Platform Deployment | How SSH Keys Are Provided |
-|---|---|
-| **Kubernetes** | Create a K8s Secret with the private key → mount as a volume into the Conductor pod |
-| **Docker Compose** | Bind mount a host directory: `-v /path/to/keys:/etc/debezium/ssh-keys/` |
-| **Development** | Place key files in a local directory referenced by config |
-
-This approach has several advantages:
-- Key material never touches the database
-- Kubernetes handles encryption at rest and RBAC natively
-- Works identically for both K8s and Docker deployments of the Platform itself
-- No SSH libraries needed in Java — Ansible reads the key file natively via `--private-key`
+---
 
 ### 6. Host Provisioning via Ansible Playbook
 
-Instead of implementing host setup checks and remediation in Java (SSH commands), the provisioning system uses an **Ansible Playbook** to prepare remote hosts.
+The diagram below shows the provisioning status state machine (left side) and the pipeline deployment status state machine (right side). Both are referenced throughout this section and Section 10:
 
-#### 6.1 What the Playbook Does
+![Host Provisioning and Pipeline Deployment Status State Machines](DDD-41/Provisioning-DeployStatus.png)
 
-The Ansible Playbook prepares target hosts by executing the following idempotent steps:
+When the File Watcher discovers a new host in the SSH config, it triggers the `HostProvisioningService` to provision that host using an Ansible Playbook.
 
-1. **Bootstrap Python (Target Host)** — uses Ansible's `raw` module to install Python if it is missing on the remote host (a dependency for running subsequent Ansible modules).
-2. **Verify connectivity** — validates SSH connection parameters.
-3. **Install Docker** — installs Docker Engine if not present, utilizing OS-agnostic package modules (supports Debian/Ubuntu and RHEL/CentOS).
-4. **Start Docker daemon** — configures Docker to start automatically on system boot and starts the service.
-5. **Configure Docker permissions** — adds the designated SSH username to the target host's `docker` group (avoids needing root access for container tasks).
-6. **Deploy Host Agent** — downloads, installs, and starts the lightweight Debezium Host Agent (configured to run as a systemd service, secured with the generated `agentToken`).
-7. **Verify system health** — checks disk space availability and logs status.
-8. **Pre-pull Debezium Server image** — pulls the required Debezium Server Docker images to ensure first-time deployment starts instantly.
+#### 6.1 Idempotent Playbook Steps
 
+1. **Bootstrap Python** — uses Ansible's `raw` module (required for subsequent Ansible modules).
+2. **Verify connectivity** — validates SSH connection using the auto-discovered SSH config.
+3. **Install Docker** — installs Docker Engine if not present (Debian/Ubuntu via `apt`, RHEL/CentOS via `yum`/`dnf`, using `ansible_os_family` facts).
+4. **Start Docker daemon** — enables Docker on boot and starts the service.
+5. **Configure Docker permissions** — adds the SSH user to the `docker` group.
+6. **Deploy Host Agent** — installs the lightweight Debezium Host Agent as a systemd service, secured with a generated bearer token.
+7. **Pre-pull Debezium Server image** — pulls the Docker image for instant first deployment.
 
-#### 6.2 How Provisioning Works
+#### 6.2 How Ansible Uses the SSH Config
 
-```
-User registers a host via POST /api/hosts
-                │
-                ▼
-User triggers provisioning via POST /api/hosts/{id}/provisioning
-                │
-                ▼
-HostProvisioningService runs Ansible Playbook asynchronously
-                │
-                ▼
-Playbook executes against the target host over SSH
-                │
-                ├── Success → host status = READY
-                └── Failure → host status = FAILED (with error report)
-```
+The right side of the [SSH Config File Watcher Flow diagram](#3-host-discovery-via-ssh-config-file-watcher) illustrates this step-by-step: from file watcher detection through Ansible's SSH config resolution to playbook execution on the remote host.
 
-The Ansible Playbook is bundled within the Conductor module (e.g., at `src/main/resources/ansible/host-setup.yml`). The `HostProvisioningService` invokes it programmatically using `ProcessBuilder`.
+Ansible handles all SSH connectivity — Java never opens SSH sessions. Instead of a traditional inventory file, the ad-hoc comma-separated host pattern is used: `ansible-playbook host-setup.yml -i "db-server-1,"`. When the SSH config is at the standard `~/.ssh/config` path, Ansible resolves all connection parameters (`HostName`, `User`, `IdentityFile`) automatically.
 
-#### 6.3 Why Ansible
+The playbook is stored at `src/main/resources/ansible/host-setup.yml` in the source tree, and is copied to `/opt/debezium/ansible/host-setup.yml` in the Docker image during build.
 
-| Aspect | Java SSH Checks (DDD-41 v1) | Ansible Playbook |
-|---|---|---|
-| **Idempotency** | Must be coded manually for each check | Built-in — Ansible modules are idempotent by default |
-| **OS detection** | Manual parsing of `/etc/os-release` | Ansible facts auto-detect OS family |
-| **Error handling** | Custom per-check | Structured playbook with `rescue` blocks |
-| **Extensibility** | New Java class per check | Add a task to the YAML file |
-| **Community** | Custom code | Leverage existing `community.docker` modules |
-| **Transparency** | Opaque to ops teams | Standard Ansible — ops teams can review and customize |
+#### 6.3 Thread Isolation for Ansible Execution
 
-### 7. Host Pipeline Mapper
+Ansible playbook runs are long-running, blocking operations (typically 2–5 minutes). The `HostProvisioningService` uses a **dedicated, size-restricted executor pool** (size 4) to isolate Ansible execution from the Quarkus reactive thread pool and `ForkJoinPool.commonPool()`. Database updates are handled in separate transactional blocks after process exit.
 
-`HostPipelineMapper` is analogous to the existing `PipelineMapper`. Both consume a `PipelineFlat`; `PipelineMapper` produces a `DebeziumServer` CRD (structured YAML for Kubernetes), while `HostPipelineMapper` produces a flat `application.properties` string (for direct Debezium Server configuration).
+---
 
-The mapper reuses the same prefix resolution logic and connection-type-specific field naming from `PipelineMapper` (e.g., `username → database.user`, SQL Server `database → database.names`). The key difference is that `HostPipelineMapper` produces the **final** config with fully-qualified property names (e.g., `debezium.source.database.hostname`), whereas `PipelineMapper` relies on the CRD schema to add those prefixes.
+### 7. Automatic Pipeline Scheduling (Concurrency-Safe)
+
+When a user deploys a pipeline in host mode, they do **not** select a target host. Instead, a `HostDeploymentService` atomically selects the least-loaded host and allocates a conflict-free port.
+
+#### 7.1 Concurrency Safety via PESSIMISTIC_WRITE
+
+Concurrent pipeline deployments create two race conditions:
+1. **Scheduling skew:** Two threads read the same stale pipeline counts and both select the same "least-loaded" host.
+2. **Port collision:** Two threads query `MAX(serverPort)` simultaneously and both allocate the same port.
+
+Both are solved by acquiring `PESSIMISTIC_WRITE` locks on ALL ready hosts (sorted by ID to prevent deadlocks) BEFORE evaluating load counts and allocating ports. The method uses `@Transactional(REQUIRES_NEW)` so locks are released immediately after selection — before the HTTP call to the Agent.
+
+#### 7.2 DeployStrategy Interface
+
+The default `RoundRobinStrategy` selects the `READY` host with the fewest active deployments (via a live `COUNT` query inside the lock). The `DeployStrategy` interface allows future alternatives (affinity-based, resource-based, labeled/tagged scheduling).
+
+---
+
+### 8. Host Pipeline Mapper
+
+`HostPipelineMapper` consumes a `PipelineFlat` and produces a flat `application.properties` string for Debezium Server. It reuses the same prefix resolution logic and connection-type-specific field naming from the existing `PipelineMapper`.
 
 A `TreeMap` is used for deterministic key ordering, and manual serialization (not `Properties.store()`) avoids timestamp comments — both are critical for stable SHA-256 config hashing used in drift detection.
 
-### 8. Pipeline Lifecycle on Host
+---
 
-The lifecycle of a host-deployed pipeline mirrors the Kubernetes path conceptually:
+### 9. Pipeline Lifecycle on Host
+
+The lifecycle of a host-deployed pipeline mirrors the Kubernetes path:
 
 | Operation | Kubernetes Path | Host Path |
 |---|---|---|
-| **Deploy** | `serverSideApply()` CRD → Operator creates Pod | HTTP POST to remote host → Docker run |
-| **Undeploy** | Delete CRD → Operator removes Pod | HTTP POST to remote host → Docker rm |
-| **Stop** | Set `stopped=true` on CRD | HTTP POST to remote host → Docker stop |
-| **Start** | Set `stopped=false` on CRD | HTTP POST to remote host → Docker start |
-| **Logs** | K8s Pod log API | HTTP GET from remote host → Docker logs |
-| **Signals** | REST call to Debezium Server K8s Service | HTTP call proxied through remote host |
+| **Deploy** | `serverSideApply()` CRD → Operator creates Pod | HTTP POST to Agent → Docker run |
+| **Undeploy** | Delete CRD → Operator removes Pod | HTTP POST to Agent → Docker rm |
+| **Stop** | Set `stopped=true` on CRD | HTTP POST to Agent → Docker stop |
+| **Start** | Set `stopped=false` on CRD | HTTP POST to Agent → Docker start |
+| **Logs** | K8s Pod log API | HTTP GET from Agent → Docker logs |
 
-**Important threading consideration:**
-The platform's database event Watcher runs on a single, dedicated background thread. In Kubernetes deployments, `serverSideApply()` finishes in under 2 seconds. In host-based deployments, starting a container can take significantly longer (e.g., if downloading layers or executing system checks).
+To prevent blocking the single background Watcher thread during slow Docker operations:
+1. `HostPipelineController` invokes the Agent REST endpoint — expects a fast `202 Accepted`.
+2. The remote Host Agent handles the container spin-up asynchronously.
+3. A `HostDeploymentStatusPoller` on the Conductor queries the Agent every 30 seconds to fetch progress and transition the state to `RUNNING` or `FAILED`.
 
-To prevent blocking the single Watcher thread, the lifecycle interaction is designed as follows:
-1. `HostPipelineController` invokes the Agent REST endpoint and expects a fast `202 Accepted` response.
-2. The remote Host Agent registers the deployment order and handles the container spin-up asynchronously.
-3. The Conductor's Watcher completes immediately, freeing the thread for other events.
-4. A background `HostDeploymentStatusPoller` on the Conductor queries the Agent every 30 seconds to fetch progress and transition the state to `RUNNING` or `FAILED`.
+**Host port allocation:** The Conductor dynamically assigns a unique `serverPort` within a `PESSIMISTIC_WRITE` lock on the host — `MAX(serverPort)+1` starting from a configurable base port (default `9000`).
 
-#### 8.1 Host Port Allocation Strategy
-To run multiple Debezium pipelines on the same target host without TCP port conflicts:
-- During pipeline association, the Conductor dynamically assigns a unique `serverPort` inside `HostDeploymentEntity`.
-- **Allocation Rule:** The system queries the database to find the maximum `serverPort` allocated to any container (active or stopped) on that target host and increments it by `1` (starting from a configurable base port, e.g., `8080` or `9000`).
-- The Host Agent maps this unique host port directly to the inner container port (e.g., `-p <serverPort>:8080`), ensuring webhooks and signals reach the correct Debezium instance.
+---
 
+### 10. Host Agent (Remote-Side)
 
-### 9. Host Agent Client (Conductor-side)
+The Host Agent is a lightweight HTTP service deployed on each remote host during Ansible provisioning. It acts as a thin wrapper around the Docker CLI — the Agent itself does not run containers; it translates HTTP requests into `docker` commands.
 
-The Conductor backend requires an HTTP client to communicate with registered agents. To support varying target IP addresses and ports dynamically, this is implemented using **Quarkus Dynamic REST Clients**:
+**What the Agent is:**
+- A single-binary HTTP server (Quarkus-based) listening on a configurable port (default: `8090`)
+- Deployed as a `systemd` service during Ansible provisioning (auto-starts on boot)
+- Secured with a bearer token generated per-host during provisioning and stored in `HostStatusEntity.agentToken`
 
-1. **`HostAgentApi` (Interface):** A declarative MicroProfile/Quarkus REST Client interface decorated with `@RegisterRestClient`. It defines target endpoints using standard JAX-RS annotations and utilizes the `@Url` parameter annotation:
-   ```java
-   @RegisterRestClient(configKey = "host-agent-api")
-   public interface HostAgentApi {
-       @POST
-       @Path("/deploy")
-       Response deploy(@Url String baseUrl, 
-                      @HeaderParam("Authorization") String authHeader, 
-                      DeployRequest request);
-   }
-   ```
+**What the Agent does:**
 
-2. **`HostAgentClient` (Service Wrapper):** An `@ApplicationScoped` bean that injects `HostAgentApi`. It constructs the base URL dynamically from the host target's `hostname` and `agentPort`, adds the `agentToken` authorization header, and handles error mapping. This follows the same pattern already established by `DebeziumServerClient` in the existing codebase, which uses `@Url` for dynamic signal routing.
-
-
-### 10. Status Polling and Config Drift Detection
-
-A `@Scheduled` poller runs periodically (e.g., every 30 seconds) to check the status of all active host deployments:
-
-1. Queries all `HostDeploymentEntity` records with status `RUNNING`
-2. For each, calls the remote host to check container state and deployed config hash
-3. Updates status:
-   - Container exited/not found → `FAILED`
-   - Config hash mismatch → `CONFIG_DRIFT`
-
-### 11. REST API
-
-Following existing patterns from `VaultResource` and `PipelineResource`:
-
-| Endpoint | Method | Description |
+| Endpoint | Docker Command | Response |
 |---|---|---|
-| `/api/hosts` | GET | List all registered hosts |
-| `/api/hosts` | POST | Register a new host |
-| `/api/hosts/{id}` | GET | Get host details |
-| `/api/hosts/{id}` | DELETE | Remove a host |
-| `/api/hosts/{id}/provisioning` | GET | Get provisioning status |
-| `/api/hosts/{id}/provisioning` | POST | Trigger provisioning |
+| `POST /api/agent/deploy` | `docker run -d --name <name> -p <port>:8080 -v <config>:/debezium/conf debezium/server` | `202 Accepted` |
+| `POST /api/agent/undeploy` | `docker rm -f <name>` | `200 OK` |
+| `POST /api/agent/stop` | `docker stop <name>` | `200 OK` |
+| `POST /api/agent/start` | `docker start <name>` | `200 OK` |
+| `GET /api/agent/status/<name>` | `docker inspect <name>` | `{ running: bool, configHash: string }` |
+| `GET /api/agent/logs/<name>` | `docker logs <name>` | Plain text log stream |
 
-Pipeline-host association endpoints (added to `PipelineResource`):
+**Deploy request details:** The Conductor sends the `application.properties` content, container name, image version, and allocated port in the deploy request body. The Agent writes the properties to a local file and bind-mounts it into the Debezium Server container at `/debezium/conf/application.properties`.
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/api/pipelines/{id}/host` | POST | Associate pipeline with a host (at deploy time) |
-| `/api/pipelines/{id}/host` | DELETE | Dissociate pipeline from host |
+**Config hash for drift detection:** The Agent computes a SHA-256 hash of the deployed `application.properties` file and returns it via the `/status` endpoint. The Conductor compares this hash against the expected hash stored in `HostDeploymentEntity.configHash` to detect configuration drift.
 
-### 12. Stage (Frontend) Changes
+**Security:** Every request must include a valid `Authorization: Bearer <token>` header. The Agent validates it against the token set during provisioning. Requests without a valid token are rejected with `401 Unauthorized`.
 
-#### 12.1 Host Management Section
+---
 
-- **Host list page** — shows all registered hosts with provisioning status badges.
-- **Host registration form** — input fields for: Name, Hostname (IP/DNS), SSH Port (defaults to 22), Agent Port (defaults to 8090), SSH Username, and SSH Key Path (volume-mounted path).
-- **Host details page** — shows host system facts, provisioning log summaries, and a list of running/deployed pipelines.
+### 11. Host Agent Client (Conductor-Side)
 
-#### 12.2 Deploy-Time Environment Selection
+The Conductor communicates with remote Agents via a Quarkus REST Client. Since each Agent runs on a different host with a different IP and port, the client uses the `@Url` annotation for dynamic URL routing — following the same pattern established by `DebeziumServerClient` in the operator path.
 
-The existing pipeline design flow remains unchanged. At **deploy time**, the user selects the deployment model:
-- **Kubernetes** (default) — existing behavior
-- **Bare Metal** → host selector dropdown listing only hosts with `READY` status
+**`HostAgentApi`** is a `@RegisterRestClient` interface that defines the Agent endpoints. Each method accepts a `@Url String baseUrl` parameter, allowing the URL to be overridden per-invocation:
 
-This decouples pipeline design from deployment infrastructure.
+```java
+@RegisterRestClient(configKey = "host-agent-api")
+public interface HostAgentApi {
+    @POST @Path("/deploy")
+    Response deploy(@Url String baseUrl,
+                    @HeaderParam("Authorization") String authHeader,
+                    DeployRequest request);
 
-### 13. New Module and Package Structure
-
-#### Conductor-Side Changes
-
-```
-environment/
-├── EnvironmentController.java              ← existing (unchanged)
-├── PipelineController.java                 ← existing (unchanged)
-├── VaultController.java                    ← existing (unchanged)
-├── RoutingEnvironmentController.java       ← [NEW]
-├── RoutingPipelineController.java          ← [NEW]
-├── RoutingVaultController.java             ← [NEW] delegates vault operations
-├── operator/                               ← existing (scope change only)
-│   ├── OperatorEnvironmentController.java  ← [MODIFY] @ApplicationScoped → @Dependent
-│   └── ...
-├── host/                                   ← [NEW PACKAGE]
-│   ├── HostEnvironmentController.java      ← [NEW] implements EnvironmentController
-│   ├── HostPipelineController.java         ← [NEW] implements PipelineController
-│   ├── HostVaultController.java            ← [NEW] implements VaultController (no-op, consistent with OperatorVaultController)
-│   ├── HostPipelineMapper.java             ← [NEW] maps pipeline settings to application.properties
-│   ├── HostDeploymentStatusPoller.java     ← [NEW] scheduled background state checker
-│   ├── agent/
-│   │   ├── HostAgentApi.java               ← [NEW] Quarkus dynamic REST client interface
-│   │   └── HostAgentClient.java            ← [NEW] REST service wrapper
-│   └── provisioning/
-│       └── HostProvisioningService.java    ← [NEW] triggers Ansible playbook execution via ProcessBuilder
-data/model/
-├── HostTargetEntity.java                   ← [NEW]
-└── HostDeploymentEntity.java               ← [NEW]
-domain/
-├── HostTargetService.java                  ← [NEW] business logic for remote host records
-└── HostDeploymentService.java              ← [NEW] business logic for host deployments
-api/
-├── HostTargetResource.java                 ← [NEW] REST endpoints under /api/hosts
-└── PipelineResource.java                   ← [MODIFY] add deploy-time host assignment endpoints
+    @GET @Path("/status/{containerName}")
+    ContainerStatus status(@Url String baseUrl,
+                           @HeaderParam("Authorization") String authHeader,
+                           @PathParam("containerName") String containerName);
+    // ... undeploy, stop, start, logs follow the same pattern
+}
 ```
 
-### 14. Maven Dependencies
+**`HostAgentClient`** is an `@ApplicationScoped` service wrapper that constructs the base URL dynamically from `HostStatusEntity.hostname` and `agentPort` (e.g., `http://192.168.1.10:8090`), adds the `agentToken` as a `Bearer` token header, and handles error mapping.
 
-- **Quarkus Scheduler** (`io.quarkus:quarkus-scheduler`) — provides the `@Scheduled` annotation to run the status drift and health checks on background threads.
+---
+
+### 12. Status Polling and Config Drift Detection
+
+The pipeline deployment status state machine (right side of the [state machine diagram](#6-host-provisioning-via-ansible-playbook)) shows the transitions detected by this poller: `DEPLOYING → RUNNING`, `RUNNING → FAILED`, and `RUNNING → CONFIG_DRIFT`.
+
+A `@Scheduled` poller runs every 30 seconds to check all active deployments:
+- Queries all `HostDeploymentEntity` records with status `RUNNING` or `DEPLOYING`.
+- Calls the remote Agent to check container state and deployed config hash.
+- **Container exited/not found** → status updated to `FAILED`.
+- **Config hash mismatch** → status updated to `CONFIG_DRIFT`.
+
+---
+
+### 13. Module and Package Structure
+
+All new components reside in the `environment/host/` package:
+
+```
+debezium-platform-conductor/src/main/java/io/debezium/platform/
+├── environment/
+│   ├── EnvironmentController.java              ← EXISTING (unchanged interface)
+│   ├── PipelineController.java                 ← EXISTING (unchanged interface)
+│   ├── VaultController.java                    ← EXISTING (unchanged interface)
+│   │
+│   ├── operator/                               ← EXISTING PACKAGE
+│   │   ├── OperatorEnvironmentController.java  ← MODIFY: add @LookupIfProperty annotation
+│   │   ├── OperatorPipelineController.java     ← unchanged
+│   │   ├── OperatorVaultController.java        ← unchanged
+│   │   └── PipelineMapper.java                 ← unchanged
+│   │
+│   └── host/                                   ← NEW PACKAGE (all new files below)
+│       ├── HostEnvironmentController.java      ← [NEW] @LookupIfProperty("host")
+│       ├── HostPipelineController.java         ← [NEW] implements PipelineController
+│       ├── HostPipelineMapper.java             ← [NEW] pipeline → application.properties
+│       ├── HostDeploymentStatusPoller.java     ← [NEW] @Scheduled background poller
+│       ├── agent/
+│       │   ├── HostAgentApi.java               ← [NEW] Quarkus REST client interface (@Url for dynamic routing)
+│       │   └── HostAgentClient.java            ← [NEW] service wrapper (URL construction + bearer token)
+│       ├── provisioning/
+│       │   └── HostProvisioningService.java    ← [NEW] Ansible via ProcessBuilder + dedicated executor pool
+│       ├── discovery/
+│       │   ├── SshConfigParser.java            ← [NEW] parses ~/.ssh/config (handles =, quotes, wildcards)
+│       │   ├── SshHostEntry.java               ← [NEW] parsed host data record
+│       │   └── SshConfigWatcherService.java    ← [NEW] WatchService + @Scheduled fallback + key permission validation
+│       └── strategy/
+│           ├── DeployStrategy.java             ← [NEW] interface
+│           └── RoundRobinStrategy.java         ← [NEW] least-loaded round-robin
+│
+├── data/model/
+│   ├── HostStatusEntity.java                   ← [NEW] (no pipeline_count — uses live COUNT query)
+│   ├── HostDeploymentEntity.java               ← [NEW]
+│   ├── ProvisioningStatus.java                 ← [NEW] enum
+│   └── DeploymentStatus.java                   ← [NEW] enum
+│
+├── domain/
+│   ├── HostDeploymentService.java              ← [NEW] atomic select + port allocation with PESSIMISTIC_WRITE
+│   └── PipelineService.java                    ← MODIFY: Instance<T> replaces @All List
+│
+└── resources/
+    ├── ansible/
+    │   └── host-setup.yml                      ← [NEW] Ansible playbook
+    └── db/migration/
+        └── V3.4.0__add_host_deployment.sql     ← [NEW] Flyway migration
+```
+
+---
+
+### 14. Conductor Docker Image
+
+The Conductor Docker image includes:
+- **Ansible** — installed via `pip3 install ansible`
+- **OpenSSH client** — for Ansible's SSH transport
+- **`community.docker` Ansible collection** — `ansible-galaxy collection install community.docker`
+
+A single image includes both operator-mode and host-mode dependencies. The runtime mode is selected via the `DEBEZIUM_DEPLOYMENT_MODE` environment variable.
+
+---
 
 ### 15. Compatibility and Migration
 
-- **Zero breaking changes.** `EnvironmentController`, `PipelineController`, and `VaultController` interfaces are unchanged.
-- **Backward compatible routing.** `RoutingEnvironmentController` defaults to operator path when no `HostDeploymentEntity` exists.
-- **Existing Watcher flow unchanged.** `ConductorEnvironmentWatcher`, `OutboxParentEventConsumer` are not modified.
-- **Database migration is additive.** New tables only, no changes to existing tables.
+- **Zero breaking changes.** All existing interfaces remain unchanged.
+- **Default mode is operator.** `@LookupIfProperty(lookupIfMissing = true)` ensures the operator controller activates when no mode is specified — existing deployments continue working without any configuration changes.
+- **Database migration is additive.** New tables only (`V3.4.0__add_host_deployment.sql`), no changes to existing tables.
+- **Single Docker image.** Both modes coexist in one image; mode is selected at runtime via environment variable.
 
-### 16. Multi-Host Scheduling (Future Consideration)
-
-For the initial phase, the user explicitly selects which host to deploy a pipeline on. In the future, automatic scheduling across multiple hosts could be considered. Possible strategies:
-
-- **Round Robin** — simple, distributes evenly
-- **Machine Load** — deploy to the host with lowest resource utilization
-- **Affinity Rules** — deploy related pipelines to the same host for data locality
-
-This is out of scope for the initial implementation but the data model supports it.
-
-## Open Questions
-
-1. **Ansible installation requirement:** Should Ansible be bundled inside the Conductor Docker image, or should it be an optional dependency that users install? Bundling increases image size but simplifies deployment.
-
-2. **Multi-host scheduling strategy:** For future work, should we implement round-robin, load-based, or affinity-based scheduling when deploying to multiple hosts?
-
-3. **Host health monitoring:** Beyond pipeline status polling, should the Platform monitor host-level health (CPU, memory, disk) through periodic SSH checks or an agent?
+---
 
 ## Risks and Mitigations
 
 | Risk | Mitigation |
 |---|---|
-| SSH connection failures during provisioning | Ansible retries with configurable retry count; clear error reporting via API |
-| Docker not available on target host | Ansible Playbook installs Docker with OS detection |
-| Remote host unreachable after provisioning | Status poller detects and marks deployments as FAILED |
-| Config drift from manual host changes | SHA-256 hash comparison on every poll; CONFIG_DRIFT status surfaced to UI |
-| Port conflicts on target host | Per-pipeline `serverPort` in `HostDeploymentEntity` |
-| CDI ambiguous dependency | `RoutingEnvironmentController` is the single `@ApplicationScoped` bean |
-| Blocking Watcher thread | Deploy endpoint returns 202 Accepted immediately; async processing |
+| SSH config file syntax error from sysadmin | Parser validates format; invalid entries are logged and skipped without affecting valid hosts |
+| File Watcher misses events (e.g., NFS mounts, K8s ConfigMap symlink-swap) | `@Scheduled` periodic reconciliation fallback (every 5 minutes) re-reads the entire file |
+| Port conflicts on target host | `PESSIMISTIC_WRITE` lock on host during port allocation prevents concurrent threads from allocating the same port |
+| Config drift from manual host changes | SHA-256 hash comparison on every poll; `CONFIG_DRIFT` status surfaced |
+| Blocking Watcher thread | Agent deploy endpoint returns `202 Accepted` immediately; async processing |
+| SSH key file permissions too open | Validated on startup; K8s Secret `defaultMode: 256` enforces `0400`; clear error logged if keys are `0644` |
+| Ansible blocks Quarkus reactive threads | Dedicated `ansibleExecutor` thread pool isolates blocking Ansible runs from `ForkJoinPool.commonPool()` |
+| Concurrent deploys select same host | `PESSIMISTIC_WRITE` lock on ALL ready hosts (sorted by ID) forces serialization; live `COUNT` query inside lock |
+| Remote Agent unreachable after provisioning | Status poller detects unreachable agents and marks deployments as `FAILED`; bearer token auth prevents unauthorized access |
