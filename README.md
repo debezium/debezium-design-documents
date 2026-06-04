@@ -10,3 +10,4 @@ When creating a new document, please add it to the list below.
 * [DDD-3](DDD-3.md): Incremental snapshotting
 * [DDD-7](DDD-7.md): Asynchronous Debezium embedded engine
 * [DDD-9](DDD-9.md): Oracle unbuffered adapter
+* [DDD-44](DDD-44.md): SQLite connector
