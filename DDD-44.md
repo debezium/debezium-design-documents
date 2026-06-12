@@ -282,7 +282,7 @@ The SQLite-specific fields are:
 | Property | Description |
 |---|---|
 | `database.file.path` | Absolute path to the `.db` file. Required. |
-| `database.server.name` | Logical name for this connector instance. Used as the Kafka topic prefix and the partition key in the offset store. |
+| `topic.prefix` | Standard Debezium logical name for this connector instance. Required. Used as the Kafka topic prefix and the partition key in the offset store. (This is the current field name; older Debezium releases called it `database.server.name`.) |
 | `table.include.list` | Comma-separated regex patterns for tables to capture. Internal tables (`sqlite_*`, `_debezium_*`) are always excluded. |
 | `table.exclude.list` | Comma-separated regex patterns for tables to skip. |
 | `poll.interval.ms` | How long the streaming loop sleeps between polls. Default: `500` ms. |
@@ -326,7 +326,7 @@ This catches the case where another process holds an exclusive lock on the file.
 Kafka Connect uses partitions to namespace offsets. Since one SQLite file always maps to one connector instance, the partition just holds the logical server name:
 
 ```
-{ "server": "<database.server.name>" }
+{ "server": "<topic.prefix>" }
 ```
 
 `SQLitePartition.Provider` returns a set with this single partition. This is the same approach MySQL and SQL Server use in single-database mode.
@@ -524,5 +524,5 @@ If no offset exists in the store (first run, or the offset was manually deleted)
 
 ### 3.5.5 Offset Store and Partition Key
 
-Kafka Connect stores offsets keyed by partition. The partition for this connector is `{ "server": "<database.server.name>" }`. This means the offset is tied to the logical name, not the physical file path. If the database file is moved or renamed, the logical name stays the same and the connector resumes correctly as long as `database.file.path` is updated in the config. If the logical name is changed, the connector treats it as a new connector instance and will snapshot from scratch.
+Kafka Connect stores offsets keyed by partition. The partition for this connector is `{ "server": "<topic.prefix>" }`. This means the offset is tied to the logical name, not the physical file path. If the database file is moved or renamed, the logical name stays the same and the connector resumes correctly as long as `database.file.path` is updated in the config. If the logical name is changed, the connector treats it as a new connector instance and will snapshot from scratch.
 
