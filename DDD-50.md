@@ -1,4 +1,4 @@
-# DDD-42: PyDebeziumAI - Real-Time CDC Integration for LangChain & LangGraph
+# DDD-50: PyDebeziumAI - Real-Time CDC Integration for LangChain & LangGraph
 
 This document describes the design and architecture of **PyDebeziumAI**, a Python library that enables real-time Retrieval-Augmented Generation (RAG) synchronization by streaming database change events captured by Debezium into vector stores.
 
@@ -6,7 +6,7 @@ This document describes the design and architecture of **PyDebeziumAI**, a Pytho
 
 Modern Generative AI and Large Language Model (LLM) applications rely on Retrieval-Augmented Generation (RAG) to ground model responses in dynamic domain data. Relational databases store the source of truth for these applications, but traditional methods for syncing database state to vector search indexes have significant limitations:
 
-1. **Periodic Batch Refreshes / Polling**: Querying the database periodically is slow, resource-intensive, and introduces sync lag. During the lag window, the LLM retrieves stale context, leading to outputs based on outdated data, or hallucinations if the requested entity was deleted in the database but still exists in the vector store.
+1. **Periodic Batch Refreshes / Polling**: Querying the database periodically is slow, resource-intensive, and introduces sync lag. During the lag window, the LLM retrieves stale context, leading to outputs based on outdated data. Furthermore, sync lag can lead to hallucinations when there is a complete lack of data; for example, if a new product is added to the database but the change is not yet propagated to the vector store, an AI agent asked about the new product may hallucinate a response due to the missing information.
 2. **Double Writes**: Forcing the application layer to write to both the database and the vector store is error-prone, violates transactional safety, and makes recovery from partial failures difficult.
 3. **Complex CDC Configurations**: Existing CDC-to-AI pipelines require heavy infrastructure (e.g., Kafka, Debezium Server, Kafka Connect, Spark/Flink, and vector ingestion jobs), which is complex to manage for local developers or lighter Python microservices.
 
@@ -56,7 +56,7 @@ We introduce the `pydebeziumai` Python library, structured into 5 cohesive layer
 
 The diagram below outlines the flow of database WAL change events through the library layers into the target vector stores.
 
-![Architecture Diagram](DDD-42/architecture.png)
+![Architecture Diagram](DDD-50/architecture.png)
 
 ---
 
