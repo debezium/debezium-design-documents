@@ -15,3 +15,4 @@ When creating a new document, please add it to the list below.
 * [DDD-13](DDD-13.md): Debezium component descriptors
 * [DDD-16](DDD-16.md): Quarkus Debezium Cache/Search Invalidation
 * [DDD-38](DDD-38.md): Pipeline Monitoring for Debezium Platform
+* [DDD-53](DDD-53.md): PostgreSQL LISTEN/NOTIFY Connector Mode
