@@ -199,10 +199,10 @@ SELECT change_id, table_name, operation, old_row_data, new_row_data, committed_a
 FROM _debezium_cdc_log
 WHERE change_id > ?
 ORDER BY change_id ASC
-LIMIT <batch_size>
+LIMIT <cdc.log.batch.size>
 ```
 
-The `?` is the `change_id` from the current `SQLiteOffsetContext`. `batch_size` comes from `SQLiteConnectorConfig` and defaults to `1000`. After each batch, if no rows were returned, the loop sleeps for `poll.interval.ms` before trying again.
+The `?` is the `change_id` from the current `SQLiteOffsetContext`. `cdc.log.batch.size` comes from `SQLiteConnectorConfig` and defaults to `1000`. After each batch, if no rows were returned, the loop sleeps for `poll.interval.ms` before trying again.
 
 Keeping queries bounded is important for a reason specific to SQLite: an open read transaction blocks WAL checkpointing. A checkpoint is when SQLite copies committed WAL frames back into the main database file and resets the WAL. If Debezium holds a long read transaction, the WAL file keeps growing. Using `LIMIT` means each query opens and closes a short transaction, giving SQLite room to checkpoint between polls.
 
@@ -285,8 +285,8 @@ The SQLite-specific fields are:
 | `topic.prefix` | Standard Debezium logical name for this connector instance. Required. Used as the Kafka topic prefix and the partition key in the offset store. (This is the current field name; older Debezium releases called it `database.server.name`.) |
 | `table.include.list` | Comma-separated regex patterns for tables to capture. Internal tables (`sqlite_*`, `_debezium_*`) are always excluded. |
 | `table.exclude.list` | Comma-separated regex patterns for tables to skip. |
-| `poll.interval.ms` | How long the streaming loop sleeps between polls. Default: `500` ms. |
-| `batch.size` | Max rows to fetch from `_debezium_cdc_log` per poll. Default: `1000`. Keeping this small limits how long each read transaction stays open, which prevents the WAL file from growing too large between checkpoints. |
+| `poll.interval.ms` | How long the streaming loop sleeps between polls. Default: `500` ms. Standard Debezium field inherited from `CommonConnectorConfig`; the connector reads it rather than declaring its own. |
+| `cdc.log.batch.size` | Max rows to fetch from `_debezium_cdc_log` per poll. Default: `1000`. Keeping this small limits how long each read transaction stays open, which prevents the WAL file from growing too large between checkpoints. This is a separate knob from the inherited `max.batch.size`, which bounds how many records the change-event queue hands to Kafka Connect per `poll()`; the two operate at different layers and are decoupled by the queue buffer. |
 
 All fields go into a `Field.Set ALL_FIELDS`, which Kafka Connect uses for validation and documentation.
 
@@ -345,18 +345,23 @@ On restart, the inner `Loader` class reads this map back and rebuilds the contex
 
 ### 3.2.8 Schema: `SQLiteDatabaseSchema`
 
-`SQLiteDatabaseSchema` extends `RelationalDatabaseSchema`. SQLite has no built-in DDL history, so we do not go up the `HistorizedRelationalDatabaseSchema` branch. Extending `RelationalDatabaseSchema` gives us the `Tables` registry, column and table filtering, and `schemaFor(TableId)` for free, so we only need to fill in schema loading from `sqlite_master`. It reads the current schema on startup and refreshes it when a schema change is detected (see Section 3.4).
+`SQLiteDatabaseSchema` extends `RelationalDatabaseSchema`. SQLite has no built-in DDL history, so we do not go up the `HistorizedRelationalDatabaseSchema` branch. Extending `RelationalDatabaseSchema` gives us the `Tables` registry, column and table filtering, and `schemaFor(TableId)` for free, so we only need to fill in schema loading from the live database. It reads the current schema on startup and refreshes it when a schema change is detected (see Section 3.4).
 
-The main method is `refresh(connection)`, which runs:
+The main method is `refresh(connection)`. It delegates to the inherited `JdbcConnection.readSchema`, which enumerates the user tables, reads each table's columns and primary key through the SQLite JDBC driver's `DatabaseMetaData`, applies the table and column include/exclude filters, and builds a `Table` for each monitored table. The driver implements that metadata over `PRAGMA table_info` internally, so no `CREATE TABLE` text is parsed. The `sqlite_%` and `_debezium_%` tables are always excluded.
 
-```sql
-SELECT name, sql FROM sqlite_master
-WHERE type = 'table'
-  AND name NOT LIKE 'sqlite_%'
-  AND name NOT LIKE '_debezium_%'
-```
+The one thing the connector cannot take from the driver is the column type. The SQLite JDBC driver reports a JDBC type that does not follow SQLite's affinity rules: a `BLOB` column and a column with no declared type both come back as `VARCHAR`, and `BOOLEAN` comes back as `INTEGER`. The driver does preserve the declared type string verbatim, so the connector overrides `JdbcConnection.overrideColumn` and recomputes the column's type from that string using SQLite's [type affinity](https://www.sqlite.org/datatype3.html) rules. Affinity is the only SQLite-specific piece of schema loading; table enumeration, nullability, and primary keys all come from the framework.
 
-The `sql` column holds the original `CREATE TABLE` statement that SQLite stores verbatim. A lightweight `SQLiteDdlParser` reads this and builds a `Table` object for each monitored table. During this step, SQLite's [type affinity](https://www.sqlite.org/datatype3.html) rules are used to map SQLite column types to Debezium's `Column` model.
+#### Why not a DDL parser
+
+An earlier draft of this design read the `sql` column of `sqlite_master`, the original `CREATE TABLE` text SQLite stores verbatim, and parsed it with a lightweight `SQLiteDdlParser`. We dropped that approach. Parsing `CREATE TABLE` text by hand is hard to get right: quoted, bracketed, and backtick identifiers; column and table constraints; `CHECK` expressions with commas inside parentheses; `DEFAULT` expressions; foreign-key clauses; and generated columns. The driver's metadata returns exactly the per-column facts we need (name, declared type, not-null flag, default, and primary-key position) and is immune to all of that. SQLite's affinity rules apply to the declared type string either way, so nothing about the type mapping is lost.
+
+Three options were considered for reading column structure:
+
+1. A hand-written `SQLiteDdlParser` over `sqlite_master.sql`. This is the pattern MySQL and Oracle use, but only because their column structure arrives as DDL text in a log stream with no live database to query. SQLite has a live database, so this option takes on the parsing-correctness risk above for no benefit.
+2. A hand-written reader that runs `PRAGMA table_info(<table>)` per table and builds each `Table` directly. This is correct and gives full control, but it reimplements table enumeration, primary-key reading, and filtering that `RelationalDatabaseSchema` and `JdbcConnection.readSchema` already provide.
+3. The inherited `JdbcConnection.readSchema`, overriding only the type resolution. This is the pattern Postgres uses: it reuses the driver's metadata for enumeration, columns, and primary keys, and overrides `overrideColumn` to inject connector-specific type handling.
+
+We chose option 3. A spike confirmed the SQLite JDBC driver reports nullability and primary keys correctly, including composite keys and their order, and preserves the declared type string. The only unreliable field is the JDBC type, which we override anyway. Option 3 is the least connector code and matches an established Debezium pattern, so it is both the simplest and the most idiomatic.
 
 ### 3.2.9 Change Event Source Factory: `SQLiteChangeEventSourceFactory`
 
@@ -378,7 +383,7 @@ This is controlled by `snapshot.mode`, following the same pattern as other Debez
 |---|---|
 | `initial` (default) | Snapshot only on first run, when there is no stored offset. |
 | `always` | Snapshot on every connector start, even if an offset exists. |
-| `never` | Skip the snapshot entirely. Streaming starts from the current tail of `_debezium_cdc_log`. |
+| `no_data` | Skip the data snapshot entirely. Streaming starts from the current tail of `_debezium_cdc_log`. (This is the modern name for what older Debezium releases called `never`; it maps to the framework's `no_data` snapshotter.) |
 | `initial_only` | Snapshot once, then stop without transitioning to streaming. |
 
 ### 3.3.2 The Consistency Problem
@@ -455,7 +460,7 @@ The diff compares three things:
 
 - **Tables added**: a table name appears in `sqlite_master` but not in the cached schema. The connector adds it to `SQLiteDatabaseSchema` and starts capturing events for it if it matches `table.include.list`.
 - **Tables dropped**: a table name is in the cached schema but no longer in `sqlite_master`. The connector removes it and stops emitting events for it.
-- **Columns changed**: a table exists in both, but its `CREATE TABLE` DDL in `sqlite_master` has changed. The connector re-parses the DDL and updates the column list.
+- **Columns changed**: a table exists in both, but its `CREATE TABLE` DDL in `sqlite_master` has changed. The connector re-reads the table structure through `refresh(connection)` and updates the column list.
 
 Table renames are a special case. SQLite's `ALTER TABLE ... RENAME TO` changes the name in `sqlite_master` but does not update the `rootpage` entry. The diff will see the old name disappear and a new name appear. The connector treats this as a drop + create. If the renamed table matches `table.include.list`, it starts capturing from it fresh. Events that arrived on `_debezium_cdc_log` under the old name before the rename are still processed correctly because `table_name` in the log reflects the name at write time.
 
