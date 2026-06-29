@@ -15,3 +15,4 @@ When creating a new document, please add it to the list below.
 * [DDD-13](DDD-13.md): Debezium component descriptors
 * [DDD-16](DDD-16.md): Quarkus Debezium Cache/Search Invalidation
 * [DDD-38](DDD-38.md): Pipeline Monitoring for Debezium Platform
+* [DDD-52](DDD-52.md): Debezium source connector for Neo4j
