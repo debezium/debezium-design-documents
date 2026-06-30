@@ -1,0 +1,41 @@
+@startuml snapshot-flow
+!theme plain
+
+title Snapshot Flow
+
+participant "ConnectorTask" as Task
+participant "SnapshotSource" as Snap
+participant "Neo4j DB" as Neo4j
+participant "OffsetContext" as Offset
+participant "Kafka" as Kafka
+
+Task -> Snap: start snapshot
+
+== 1. Capture streaming start point BEFORE snapshot ==
+
+Snap -> Neo4j: CALL db.cdc.current()
+Neo4j --> Snap: changeId = "ABC123..."
+Snap -> Offset: store changeId as resume point
+
+== 2. Snapshot nodes (for each captured label) ==
+
+loop For each label in node.label.include.list
+    Snap -> Neo4j: MATCH (n:Label)\nRETURN elementId(n),\n  labels(n), properties(n)
+    Neo4j --> Snap: result set
+    Snap -> Kafka: emit "read" (r) events\nto prefix.db.node.Label
+end
+
+== 3. Snapshot relationships (for each captured type) ==
+
+loop For each type in relationship.type.include.list
+    Snap -> Neo4j: MATCH (s)-[r:TYPE]->(e)\nRETURN elementId(r),\n  type(r), ...
+    Neo4j --> Snap: result set
+    Snap -> Kafka: emit "read" (r) events\nto prefix.db.relationship.TYPE
+end
+
+== 4. Snapshot complete ==
+
+Snap -> Offset: mark snapshot completed
+Snap --> Task: done, hand off to streaming
+
+@enduml
