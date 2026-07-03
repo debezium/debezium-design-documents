@@ -433,6 +433,62 @@ WHERE consumed_at IS NOT NULL
 
 ---
 
+### Trigger-less Detection Mode
+
+For deployments where `TRIGGER` privilege cannot be granted, or triggers cannot be installed on the watched tables, detection can run entirely from the connector side by polling and diffing the source table directly. This mode does not require any trigger, connector-owned or user-owned, and is offered as an alternative to the mechanism described in [Component Details](#component-details), not a replacement for it.
+
+#### Detection mechanism
+
+At initialization and on every scheduled sweep, each connector instance holds an in-memory baseline of the watched table: sorted id and checksum pairs, using a 64-bit hash rather than a stored payload. Each sweep compares current state against this baseline using a sort-merge diff. When a row has changed, the instance dumps the old row into the outbox as the change event, covering inserts, updates, and deletes. The new content then becomes the new old baseline entry for the next comparison.
+
+```sql
+CREATE TABLE debezium_outbox (
+    id              BIGINT PRIMARY KEY,
+    row_id          BIGINT NOT NULL,
+    new_checksum    BIGINT NOT NULL,
+    event_type      TEXT NOT NULL,
+    payload         TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    detected_at     TIMESTAMP NOT NULL,
+    consumed_at     TIMESTAMP,
+    UNIQUE (row_id, new_checksum)
+);
+```
+
+`payload` holds the old row's content at the moment a change is detected.
+
+#### Memory footprint
+
+This design spends JVM heap that a log-based replication slot would not need. That trade-off should be named directly.
+
+Measured cost is approximately 15 MB per million watched rows steady state, roughly 30 MB peak mid-sweep, per replica. Validated safe to about 5M rows per replica before the JVM heap becomes a limiting factor.
+
+In exchange, this approach avoids a known failure mode of replication slots: an unconsumed slot causes the source database's own write-ahead log to grow unboundedly until a human intervenes, a failure that affects the primary database itself. A stalled or crashed connector instance under this design costs the database nothing, since its memory is simply discarded and rebuilt on restart.
+
+#### A unified detection core
+
+The same diff engine processes both the notify-triggered sweep and continuous polling. New rows are read in bounded batches, merged against the resident baseline, and released once merged.
+
+![Streaming merge across batches](./DDD-53/streaming-merge-batches.svg)
+
+Each batch is discarded immediately after it is merged and becomes eligible for garbage collection, so only one batch and the resident baseline are ever held in memory at a time.
+
+![Sort-merge diff decision logic](./DDD-53/sort-merge-diff-decision.svg)
+
+#### Outbox durability, delegated
+
+The outbox table's durability against loss (drop, truncate, corruption) is not the connector's responsibility. It follows whatever backup or replication strategy the operator already applies to the database, the same policy protecting every other table. This mode does not introduce a bespoke backup mechanism.
+
+What is the connector's responsibility is bounded recovery behavior for the gap between the last backup and the loss:
+
+- The existing scheduled job checks whether the outbox table still exists as part of its normal write path, either through a lightweight existence check or by catching the error that results when a write targets a table that no longer exists.
+- On confirmed absence, the current sweep short-circuits into the same initialization routine used at startup: recreate the table, discard the local baseline, and run a full scan that repopulates both the baseline and the outbox from current state.
+- Because outbox writes are deduplicated on row id and new checksum, concurrent resyncs from multiple replicas collapse without coordination, consistent with steady-state behavior.
+- Named limitation: only current state is recoverable this way. Any change pending in the outbox at the moment of loss, not yet consumed downstream, is genuinely lost. Downstream becomes eventually consistent with the database, not with the true event history.
+- Instance restart and outbox loss are the same code path. Both reset the baseline and re-enter initialization.
+
+---
+
 ## Configuration
 
 ```properties
