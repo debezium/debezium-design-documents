@@ -1,0 +1,23 @@
+@startuml
+skinparam rectangle {
+  RoundCorner 10
+}
+
+rectangle "Source DB\n(PostgreSQL, MySQL, ...)" as DB
+rectangle "Debezium Source\nConnector" as DBZ
+rectangle "Neo4j CUD SMT" as SMT #LightBlue
+queue "Kafka\nTopics" as KAFKA
+rectangle "Neo4j Sink Connector\n(CUD strategy)" as SINK
+database "Neo4j" as NEO4J
+
+DB -right-> DBZ : CDC
+DBZ -right-> SMT : Debezium envelope
+SMT -right-> KAFKA : CUD events
+KAFKA -right-> SINK
+SINK -right-> NEO4J : nodes and\nrelationships
+
+note bottom of SMT
+  output.mode=single
+end note
+
+@enduml

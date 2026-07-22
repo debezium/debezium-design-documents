@@ -1,0 +1,32 @@
+@startuml
+skinparam rectangle {
+  RoundCorner 10
+}
+
+rectangle "Source DB\n(PostgreSQL, MySQL, ...)" as DB
+rectangle "Debezium Source\nConnector" as DBZ
+rectangle "Neo4j CUD SMT" as SMT #LightBlue
+queue "Kafka\nTopics" as KAFKA
+rectangle "Split step\n(ksqlDB / Kafka Streams / Flink)" as FANOUT
+queue "Kafka\nTopics" as KAFKA2
+rectangle "Neo4j Sink Connector\n(CUD strategy)" as SINK
+database "Neo4j" as NEO4J
+
+DB -right-> DBZ : CDC
+DBZ -right-> SMT : Debezium envelope
+SMT -right-> KAFKA : CUD arrays
+KAFKA -right-> FANOUT : JSON arrays
+FANOUT -right-> KAFKA2 : individual\nCUD events
+KAFKA2 -right-> SINK
+SINK -right-> NEO4J : nodes and\nrelationships
+
+note bottom of SMT
+  output.mode=array
+end note
+
+note bottom of FANOUT
+  Splits JSON arrays into
+  individual CUD records
+end note
+
+@enduml
