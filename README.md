@@ -16,3 +16,4 @@ When creating a new document, please add it to the list below.
 * [DDD-16](DDD-16.md): Quarkus Debezium Cache/Search Invalidation
 * [DDD-38](DDD-38.md): Pipeline Monitoring for Debezium Platform
 * [DDD-55](DDD-55.md): Relational-to-Graph Debezium Source SMT for Neo4j
+* [DDD-57](DDD-57.md): Alerting for Debezium Platform
