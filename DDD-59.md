@@ -1,6 +1,8 @@
 # DDD-59: Generalizing per-table / per-chunk snapshot retry
 
 Tracking issue: [debezium/dbz#2297](https://github.com/debezium/dbz/issues/2297).
+Incorporates review feedback from @Naros on PR #60 (resume-from-key, whole-snapshot budget,
+constant backoff default, deprecated-alias for the Oracle property, Postgres pinning split out).
 
 ## Motivation
 
@@ -12,49 +14,36 @@ it in a `ConnectException`, it escapes the `ExecutorCompletionService`, and `doE
 whole snapshot.
 
 The only recovery today is the connector-level `errors.max.retries`, which restarts the snapshot
-from the beginning. On a large dataset that is the wrong unit of recovery:
-
-- A restart re-reads the tables and chunks that already succeeded. There's no chance to clear the
-  destination topics in between, so a topic can accumulate a very large number of duplicate records
-  on a broker sized for steady-state retention.
-- A restart unwinds all the way back to where the offset and the consistent-read position were
-  established — a fresh export snapshot id, a new flashback/exported-snapshot position, the schema
-  read again — to recover from one chunk that hit a transient error.
-
-If a chunk fails for a reason likely to clear on its own, we should retry *that chunk* rather than
-the whole snapshot.
+from the beginning. On a large dataset that is the wrong unit of recovery: it re-reads the tables
+and chunks that already succeeded (topic duplicates), and unwinds all the way back to where the
+offset and the consistent-read position were established. A chunk that fails for a transient reason
+should be recoverable by retrying *that chunk*.
 
 ## Prior art
 
-This isn't a greenfield idea in the codebase — the Oracle connector already does it, connector-
-locally. `OracleSnapshotChangeEventSource` overrides `createDataEventsForTableCallable` with a
-bounded retry loop (`OracleSnapshotChangeEventSource.java:290-355`) gated by
-`snapshot.database.errors.max.retries` (`OracleConnectorConfig.java:760`, an `int`, default `0`,
-`isNonNegativeInteger`-validated). Three things about that implementation shape this proposal:
+The Oracle connector already does this connector-locally: `OracleSnapshotChangeEventSource` overrides
+`createDataEventsForTableCallable` with a bounded retry loop gated by
+`snapshot.database.errors.max.retries` (`int`, default `0`), with a narrow retriability check
+(`isTableSnapshotErrorRetriable` — only ORA-01466), backing off with `Metronome`, firing
+`notifyCompletedTableWithError` per attempt, hand-rolled rather than via `createPooledResourceCallable`.
 
-- Its retriability check is deliberately narrow — `isTableSnapshotErrorRetriable` only retries
-  `ORA-01466` (flashback metadata changed), not "any `SQLException`".
-- It backs off with `Metronome`, not `DelayStrategy`.
-- It fires `notifyCompletedTableWithError` on every failed attempt, and it's hand-rolled rather than
-  going through `createPooledResourceCallable`.
-
-So the real question dbz#2297 raises isn't "should snapshot reads be retriable" — one connector
-already decided yes. It's whether that belongs in the common snapshot layer for every relational
-connector, and what a connector-agnostic version has to get right that the Oracle-only one could
-sidestep. That's what this document is about.
+So the question isn't whether snapshot reads should be retriable — one connector already decided yes.
+It's whether that belongs in the common snapshot layer for every relational connector, and what a
+connector-agnostic version has to get right that the Oracle-only one could sidestep.
 
 ## Goals
 
-- Provide a common, opt-in per-table/per-chunk retry in `RelationalSnapshotChangeEventSource`, with
-  a connector-overridable notion of which errors are retriable.
-- Default to current behavior; with retries set to `0` nothing changes.
-- Reconcile with Oracle's existing `snapshot.database.errors.max.retries` rather than adding a second
-  overlapping knob.
-- Be honest in the design and the docs about what retry does and does not prevent (duplicates are
-  reduced in blast radius, not eliminated — see below).
+- A common, opt-in per-table/per-chunk retry in `RelationalSnapshotChangeEventSource`, with a
+  connector-overridable retriability predicate.
+- Default to current behavior; `0` retries changes nothing.
+- Reconcile with Oracle's existing `snapshot.database.errors.max.retries` via a deprecated alias
+  rather than a second overlapping knob.
+- Retry by **resuming from the last-emitted key** rather than re-emitting a chunk, so retry does not
+  produce duplicate rows or duplicate `FIRST`/`LAST` markers — using the mechanism the incremental
+  snapshot already relies on.
 
-Non-goals: changing `errors.max.retries` (whole-snapshot retry still sits above this), and resuming
-a chunk mid-scan — a retry re-runs the chunk query from its boundary.
+Non-goals: changing `errors.max.retries` (whole-snapshot retry still sits above this); resuming
+across a connector restart (v1 keeps the high-water key in memory for same-run retry — see caveats).
 
 ## Proposed changes
 
@@ -62,28 +51,25 @@ a chunk mid-scan — a retry re-runs the chunk query from its boundary.
 
 | Property | Type | Default | Meaning |
 |---|---|---|---|
-| `snapshot.unit.retries.max` | int | `0` | Attempts to retry a single retriable table/chunk failure before it propagates. `0` = current behavior. |
-| `snapshot.unit.retry.delay.ms` | long | `10000` | Delay between attempts. |
+| `snapshot.retries.max` | int | `0` | Times the snapshot may retry a retriable table/chunk failure, as one **whole-snapshot** budget. `0` = current behavior. |
+| `snapshot.retry.delay.ms` | long | `10000` | Delay between attempts. |
 
-Following house style (cf. `SNAPSHOT_LOCK_TIMEOUT_MS` / `snapshotLockTimeout()` in
-`RelationalDatabaseConnectorConfig`), the delay getter returns a `Duration`
-(`snapshotUnitRetryDelay()`), and the max-retries field is validated with `Field::isNonNegativeInteger`
-— the same shape as Oracle's existing property.
+Per @Naros, this is a single whole-snapshot budget rather than per-unit — simpler contract, and
+per-unit granularity can be added later if needed (easier than walking it back). Following house
+style (`SNAPSHOT_LOCK_TIMEOUT_MS` / `snapshotLockTimeout()` returning `Duration`), the delay getter
+returns a `Duration` and the max field is `Field::isNonNegativeInteger`-validated.
 
-One property covers both table and chunk failures; they're the same shape and a second knob only
-raises the question of what happens when the two disagree.
-
-**Reconciling with Oracle.** Oracle's `snapshot.database.errors.max.retries` predates this. The
-cleanest path is to make the common property the canonical one and treat Oracle's as a deprecated
-alias mapping to it, with `OracleSnapshotChangeEventSource` overriding only the *retriability
-predicate* (keep ORA-01466) rather than owning the whole loop. Exact deprecation mechanics are an
-open question below.
+**Reconciling with Oracle.** The common property becomes canonical; Oracle's
+`snapshot.database.errors.max.retries` is wired as a deprecated alias via
+`Field.withDeprecatedAliases(...)` (the same mechanism Oracle already uses for
+`DEPRECATED_XSTREAM_SERVER_NAME`), so existing Oracle configs keep working and get the deprecation
+warning, and the alias can be dropped after a release or two. Oracle keeps only its retriability
+override (ORA-01466), not the whole loop.
 
 ### Retriability, not "any SQLException"
 
-Retrying every `SQLException` would burn the whole budget on permanent failures — bad credentials, a
-broken `snapshot.select.statement.overrides`, a revoked grant — and fail anyway, just slower. The
-loop consults an overridable predicate:
+Retrying every `SQLException` would burn the budget on permanent failures (bad credentials, a broken
+`snapshot.select.statement.overrides`, a revoked grant). The loop consults an overridable predicate:
 
 ```java
 protected boolean isSnapshotErrorRetriable(SQLException e) {
@@ -91,157 +77,144 @@ protected boolean isSnapshotErrorRetriable(SQLException e) {
 }
 ```
 
-Oracle overrides it with its existing ORA-01466 check. Connectors that want general transient-error
-retry (the dbz#2297 use case, driven by connection resets) can widen it — e.g. keying off
-`SQLException` subtype / `SQLTransientException` / SQLState class `08` (connection exceptions). The
-default staying `false` keeps this strictly opt-in per connector.
+Oracle overrides it with its existing ORA-01466 check. Connectors wanting general transient-error
+retry (the dbz#2297 connection-reset case) can widen it — e.g. `SQLTransientException` / SQLState
+class `08` (connection exceptions). Default `false` keeps it strictly opt-in per connector.
 
 ### Where the retry goes
 
 `createDataEventsForTableCallable` and `createDataEventsForChunkedTableCallable` are the two rethrow
 sites, so they're the boundary. Each wraps its `doCreateDataEventsFor…` call in a bounded loop that
 retries only when `isSnapshotErrorRetriable` says so; `InterruptedException` (connector stopping)
-always propagates immediately.
+always propagates immediately. `getSnapshotSourceTimestamp()` converts its own `SQLException` into a
+`ConnectException` before the row scan, so the loop unwraps a `ConnectException` whose cause is a
+retriable `SQLException` as well as the bare `SQLException`.
 
-One subtlety: `getSnapshotSourceTimestamp()` is called near the top of both `doCreateDataEventsForTable`
-and `doCreateDataEventsForChunk` and converts its own `SQLException` into a `ConnectException`
-*before* the row scan. To actually cover a transient failure there, the loop catches a
-`ConnectException` whose cause is a retriable `SQLException` as well as the `SQLException` itself,
-rather than only the latter.
+### Resuming from the last-emitted key (instead of re-emitting)
 
-Sketch (chunk callable; the table version is identical in shape):
+This is the change that keeps retry from producing duplicates, and it turns out the machinery already
+exists. Snapshot rows are dispatched per-row mid-scan (`dispatchSnapshotEvent`), so naively
+re-running a chunk would re-emit rows already sent and could emit a second `FIRST` marker. Instead,
+on retry we resume from the last key we emitted:
 
-```java
-final DelayStrategy delay = DelayStrategy.constant(connectorConfig.snapshotUnitRetryDelay());
-int attempt = 0;
-while (true) {
-    if (!sourceContext.isRunning()) {
-        throw new InterruptedException("Interrupted while snapshotting chunk " + chunk.getChunkId());
-    }
-    try {
-        doCreateDataEventsForChunk(sourceContext, snapshotContext, offset, snapshotReceiver,
-                chunk, progressMap, snapshotProgress, connection);
-        return;
-    }
-    catch (SQLException | ConnectException e) {
-        final SQLException sql = asRetriableSqlException(e); // unwraps ConnectException cause
-        if (sql == null || attempt++ >= connectorConfig.snapshotUnitRetriesMax()) {
-            notificationService.initialSnapshotNotificationService().notifyCompletedTableWithError(
-                    snapshotContext.partition, snapshotContext.offset, chunk.getTableId().identifier());
-            throw new ConnectException("Snapshotting of table " + chunk.getTableId()
-                    + " chunk " + chunk.getChunkId() + " failed after " + attempt + " attempt(s)", e);
-        }
-        recoverConnection(connection);            // see below
-        LOGGER.warn("Chunk {} of table {} failed, retrying (attempt {} of {})",
-                chunk.getChunkId(), chunk.getTableId(), attempt, connectorConfig.snapshotUnitRetriesMax(), e);
-        delay.sleepWhen(true);
-    }
-}
-```
+- **Chunked path — natural fit.** `SnapshotChunkQueryBuilder` already bounds each chunk by
+  `key >= lower AND key < upper` and always appends `ORDER BY <keyCols>`. On retry we tighten the
+  lower bound from `>= lower` to `> lastEmittedKey`; the exclusive composite-key form already exists
+  (`CascadingOrBoundaryConditions.buildLowerBound(cols, sql, /*inclusiveFinal=*/false)`). This is
+  exactly what the **incremental** snapshot already does — `AbstractChunkQueryBuilder` tracks the
+  last-emitted key and builds `key > lastKey` + `ORDER BY key`. So this is porting a proven mechanism
+  into the initial chunked path, not inventing one.
+- **Legacy single-table path — needs an `ORDER BY`.** `doCreateDataEventsForTable` runs the raw
+  `SELECT … FROM <table>` with no ordering. To resume it we add `ORDER BY <key>` (the key is
+  available via `getKeyColumnsForChunking(table)`) and track the high-water key. Cost: free on
+  clustered-PK engines (InnoDB/MySQL/MariaDB, SQL Server clustered index — already in key order),
+  a real but bounded cost on Postgres heap / large secondary-PK tables (an added sort/index scan).
+- The high-water key is recorded at emit time from the row via `TableSchema.keyFromColumnData(row)`.
+
+**Fallback — keyless and select-override tables.** Tables with no usable key, and tables under
+`snapshot.select.overrides`, already run as a single unbounded, unordered chunk. With no key there's
+no high-water mark, so these fall back to re-read-and-accept-duplicates on retry (Debezium snapshots
+are already at-least-once; consumers dedupe on key). This is the only case where retry can duplicate,
+and it's documented as such.
+
+**Two honest caveats:**
+
+- *Same-run only in v1.* The offset persists a `SnapshotRecord` marker, not the last-emitted key. So
+  in-memory resume covers a retry within the same run cheaply; resuming after a connector restart
+  would need new offset state (persist the last key per chunk/table) — a larger change, proposed as a
+  follow-up rather than part of v1.
+- *Custom nullable keys.* The initial chunked builder does not do NULL-aware key comparison, whereas
+  the incremental builder deliberately does. Primary keys are non-null so the default is fine, but
+  `message.key.columns` can point at nullable columns; resume on such keys must adopt the incremental
+  builder's NULL-aware bounds, or fall back to the duplicate-accept path.
+
+A resumed read runs in the retry's transaction, so its rows carry that read's `ts_ms` — correct,
+since they weren't emitted before, though a single chunk can then span two source-time reads; worth
+stating in the docs.
 
 ### Connection recovery
 
 A failed statement can leave the pooled `JdbcConnection` in an aborted-transaction state (on
-Postgres, every subsequent statement fails with "current transaction is aborted" until a rollback).
-`isValid()` — the check already used when borrowing from the pool — reports the socket as healthy and
-would let the retry fail instantly, burning the budget. So `recoverConnection` follows the
-`RetriableConnection` pattern from dbz#2244: roll back, and reconnect if the connection is no longer
-usable, rather than a liveness check alone.
+Postgres, every later statement fails until a rollback), which `isValid()` won't detect. So
+`recoverConnection` rolls back and reconnects (the `RetriableConnection` pattern from dbz#2244)
+rather than a liveness check. It's a connector-overridable hook, because reconnecting has to reapply
+connector-specific per-connection state — Oracle's PDB context, and (once the fix below lands)
+Postgres's exported-snapshot pin.
 
-Reconnecting also has to reapply any connector-specific per-connection state that a fresh connection
-wouldn't have — Postgres's exported-snapshot pin, Oracle's PDB context (already set up via
-`connectionPoolConnectionCreated`). So `recoverConnection` is a connector-overridable hook with a
-default of rollback-plus-reconnect, not a fixed sequence.
+### Consistency per connector
 
-### Duplicates: reduced, not eliminated
+Whether resuming in a new transaction is even needed depends on how each connector pins the read:
 
-This is the part the Oracle-only version could gloss over and a general one can't. Snapshot rows are
-dispatched **per row, mid-scan** (`emitRecordWithCoordination` → `dispatcher.dispatchSnapshotEvent`,
-`RelationalSnapshotChangeEventSource.java` ~L681-728), not buffered until the chunk completes. So a
-chunk that fails 80% through has already sent those rows downstream; retrying re-scans the chunk from
-its boundary and re-dispatches them.
+- **Oracle** embeds the SCN in the query (`… AS OF SCN …`), so any read, original or resumed, returns
+  identical data. No drift; resume-from-key is purely a duplicate/marker optimization here.
+- **MySQL / MariaDB** (MariaDB extends the same `BinlogSnapshotChangeEventSource`) hold a global read
+  lock and `START TRANSACTION WITH CONSISTENT SNAPSHOT` at REPEATABLE READ for the whole read phase,
+  released only after `awaitCompletion()`. No drift; the cost is availability (below).
+- **SQL Server** pins via `SNAPSHOT` isolation (`TRANSACTION_SNAPSHOT`) set at transaction start in
+  `connectionCreated`. A resumed read must re-establish the same snapshot isolation on a fresh
+  transaction.
+- **Postgres** uses the replication slot's exported snapshot (`SET TRANSACTION SNAPSHOT`), which today
+  is only pinned on the main connection — see the separate fix below.
+- **Db2** — snapshot mechanism to be documented from the `debezium-connector-db2` repo (not verified
+  here); left as a follow-up rather than asserted.
 
-That means chunk retry **shrinks the blast radius** (one chunk's rows, not the whole snapshot) but
-does not make retry duplicate-free. Debezium snapshots are already at-least-once and consumers are
-expected to dedupe on key, so this is consistent with existing semantics — but the docs must say it
-plainly rather than imply idempotency.
+### Postgres exported-snapshot pinning — separate fix
 
-There's a sharper case than duplicate rows: the `SnapshotRecord.FIRST` / `LAST` markers. The first
-row of a chunk fires `signalFirstRecordEmitted()` mid-scan; the underlying `CountDownLatch` signals
-are idempotent, but the *emitted event* is not. If the chunk carrying the snapshot's first row fails
-after emitting it and is retried, the retry emits a second `FIRST`-tagged record. The loop therefore
-needs to gate marker emission on retried units (only emit `FIRST`/`LAST` on the first attempt), or we
-accept and document duplicate markers — flagged in Open questions.
+Postgres pins `SET TRANSACTION SNAPSHOT '<exported>'` only on the main connection; the extra pooled
+connections used when `snapshot.max.threads > 1` copy the isolation level but not the exported
+snapshot, so a parallel Postgres snapshot already isn't cross-connection consistent, independent of
+retry. Per @Naros this is a standalone bug: fix it in `main` (backportable to 3.6) by overriding
+`connectionPoolConnectionCreated` in `PostgresSnapshotChangeEventSource` to `rollback()` then issue
+`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ; SET TRANSACTION SNAPSHOT '<slotCreatedInfo.snapshotName()>'`
+on each pooled connection, guarded by the same condition the main path uses (`slotCreatedInfo != null
+&& !isOnDemand`, and only when streaming resumes from the snapshot). The pool is created after the
+main exporting transaction and it stays open for the whole snapshot, so the name is importable. This
+DDD assumes that fix and does not re-solve it.
 
-### Consistency is per-connector, not universal
+### Availability tradeoff (MySQL/MariaDB global lock)
 
-Whether a retry in a new transaction drifts in time depends entirely on how the connector pins the
-read, and it varies:
+The global lock is held for the whole read phase and the pool is fixed-size, so a chunk parked in
+`retries.max × retry.delay.ms` of backoff extends how long writes are blocked server-wide — on
+exactly the large deployment the Motivation targets. This is an argument for a modest default delay,
+and it informs the backoff choice below.
 
-- **Oracle** embeds the SCN in the query text itself (`SELECT … AS OF SCN …`). Any execution,
-  original or retried, on any connection, at any later time, returns identical data. No drift.
-- **MySQL** under the default global read lock holds it until `createDataEvents` calls
-  `releaseDataSnapshotLocks` — which only runs after `awaitCompletion()`, i.e. after every chunk
-  including retried ones. No writes land anywhere server-side during the read phase, so no drift; the
-  cost here is availability, not consistency (next point).
-- **Postgres** is where it's genuinely nuanced, and more so than I first assumed. The exported-
-  snapshot pin (`SET TRANSACTION SNAPSHOT '<exported>'`) is applied **once**, on the single
-  connection that opens the snapshot transaction, and only when a replication slot was created for
-  this run. The extra pooled connections used when `snapshot.max.threads > 1` are *not* pinned to the
-  slot's snapshot today — they inherit the isolation level and start their own independent
-  `REPEATABLE READ` transactions. So multi-threaded Postgres snapshots already don't guarantee
-  cross-connection consistency, retry or not. A retry-aware design can re-issue `SET TRANSACTION
-  SNAPSHOT` on the recovered connection — the exported snapshot stays importable as long as Debezium
-  keeps the exporting replication connection open, which it does for the whole snapshot phase — but
-  that's new per-connection infrastructure that would be *closing* this pre-existing gap, not just
-  preserving something the retry breaks.
+### Backoff
 
-So the consistency contract is per connector rather than one blanket tradeoff. For Postgres it's also
-an opportunity to tighten multi-threaded snapshot consistency generally; scoping that in or out is an
-open question below.
-
-### Availability tradeoff (MySQL global lock)
-
-Because the global lock is held for the entire read phase and the pool is fixed-size, a chunk parked
-in `retries.max × retry.delay.ms` of backoff occupies a worker slot and extends how long the lock
-blocks writes across the whole server — on exactly the large, write-heavy deployment the Motivation
-is trying to protect. Enabling snapshot retry under global-lock mode trades write availability for
-avoiding a full restart; that has to be documented, and it's an argument for a modest default delay.
+Constant by default. @Naros's point is decisive: on a connector with a bounded snapshot window
+(Oracle ~15 min OOTB), exponential backoff from a 10s base forces a full restart by roughly the 8th
+attempt, whereas constant 10s allows ~90 retries in the same window. Exponential can be an opt-in
+later with a max-delay cap so it can't blow a connector's window.
 
 ### Observability
 
 Snapshot metrics run through `SnapshotProgressListener` → `SnapshotMeter` → the `SnapshotMetricsMXBean`
-trait, not direct calls from the change-event source, and the existing per-table metrics expose
-`Map<String, Long>` breakdowns. A retry counter should match that: add
-`Map<String, Long> getTableSnapshotRetries()` on the trait, a listener callback, and a
-`ConcurrentMap` field/mutator on `SnapshotMeter` — three files, plus the WARN log above.
+trait, and existing per-table metrics expose `Map<String, Long>` breakdowns. A retry counter matches
+that shape: `Map<String, Long> getTableSnapshotRetries()` on the trait, a listener callback, and a
+`ConcurrentMap` field/mutator on `SnapshotMeter`, plus a WARN log per retry.
 
 ### Steps
 
-1. Add the two properties to `RelationalDatabaseConnectorConfig` (Duration getter, non-negative
-   validation); wire Oracle's existing property as a deprecated alias.
-2. Add `isSnapshotErrorRetriable` (default `false`) and move Oracle's ORA-01466 check onto it.
-3. Add the bounded retry loop to both callables, unwrapping `ConnectException(SQLException)`.
-4. Add `recoverConnection` as a connector-overridable hook (default rollback + reconnect); connectors
-   with per-connection state reapply it — Postgres re-pins the exported snapshot, Oracle its PDB
-   context.
-5. Gate `FIRST`/`LAST` marker emission on retried units (or decide to document duplicate markers).
-6. Add the `getTableSnapshotRetries` metric across listener/meter/trait, plus WARN logging.
-7. Tests: a chunk failing N−1 times then succeeding completes; N+1 fails with the attempt count;
-   `0` reproduces current behavior; a non-retriable error fails immediately without consuming the
-   budget; `InterruptedException` aborts regardless; retry does not emit a second `FIRST` marker.
-8. Docs: the properties, the duplicate/blast-radius note, and the per-connector consistency and
-   availability contracts.
+1. Add `snapshot.retries.max` / `snapshot.retry.delay.ms` to `RelationalDatabaseConnectorConfig`
+   (Duration getter, non-negative validation); wire Oracle's property via `withDeprecatedAliases`.
+2. Add `isSnapshotErrorRetriable` (default `false`); move Oracle's ORA-01466 check onto it.
+3. Add the whole-snapshot-budgeted retry loop to both callables, unwrapping `ConnectException(SQLException)`.
+4. Resume-from-key: on retry, tighten the chunk lower bound to `> lastEmittedKey` (chunked) / add
+   `ORDER BY <key>` + high-water tracking (legacy); record the key at emit via `keyFromColumnData`.
+   Keyless / select-override tables fall back to duplicate-accept; custom nullable keys adopt the
+   incremental NULL-aware bounds or fall back.
+5. `recoverConnection` as a connector-overridable hook (default rollback + reconnect).
+6. `getTableSnapshotRetries` metric across listener/meter/trait, plus WARN logging.
+7. Tests: chunk fails N−1 then succeeds → completes with no duplicate rows and a single `FIRST`
+   marker; fails N+1 → snapshot fails with the attempt count; `0` reproduces current behavior; a
+   non-retriable error fails immediately without consuming the budget; `InterruptedException` aborts
+   regardless; keyless table falls back to re-read.
+8. Docs: the properties, the keyless duplicate-accept fallback, the `ts_ms` note, and per-connector
+   consistency.
 
 ## Open questions
 
-- Oracle reconciliation: deprecated alias mapping `snapshot.database.errors.max.retries` onto the new
-  property, or keep both for a release with the Oracle one delegating?
-- Marker duplication: gate `FIRST`/`LAST` on first attempt, or document that retried units may repeat
-  them?
-- Retry budget per-unit (proposed) or shared across the whole snapshot?
-- Constant vs. exponential backoff — `DelayStrategy` supports both.
-- Postgres already doesn't pin the extra pooled connections to the exported snapshot when
-  `snapshot.max.threads > 1`, so multi-threaded snapshots have a cross-connection consistency gap
-  today, independent of retry. Do we close that as part of this work (re-pin every pooled connection),
-  or keep this DDD scoped to retry and track the gap separately?
+- Cross-restart resume (persisting the last-emitted key in the offset) — v1 or follow-up? Proposed
+  follow-up.
+- Db2 snapshot-consistency mechanism — needs the `debezium-connector-db2` repo to document.
+- Whether the legacy-path `ORDER BY <key>` should be unconditional or only when retries are enabled
+  (to avoid the Postgres sort cost for users who don't opt in).
