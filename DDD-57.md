@@ -28,8 +28,32 @@ Alerting closes this gap by letting users define threshold-based rules against e
 - Alert grouping, silencing, escalation policies
 - Repeat notifications while firing
 - Raw PromQL mode for custom expressions
-- Per-pipeline rule scoping
 - Real-time push via SSE/WebSocket
+
+#### Per-Pipeline Rule Scoping: Deferred by Design
+
+The initial implementation evaluates all rules globally: a rule fires for *any* pipeline that breaches its threshold. Per-pipeline scoping, the ability to target a rule to a specific list of pipelines, is deferred to a future iteration.
+
+**Why it's useful:**
+- **Differentiated thresholds per workload type** (the strongest argument): a batch ETL pipeline may tolerate 30s of source lag, while a real-time CDC pipeline needs < 5s. A single global rule cannot express both.
+- **Noise reduction for mixed workloads**: a threshold that makes sense for OLTP pipelines may fire constantly for batch ones, creating alert fatigue.
+- **Selective exclusion**: operators can exclude known-noisy or under-maintenance pipelines without disabling the rule entirely.
+
+**Why global-first is the right default:**
+- Simpler UX: one rule covers everything, no risk of forgetting a pipeline.
+- New pipelines are automatically covered without updating rules.
+- Fewer rules to manage overall.
+- Most users start with uniform rules; per-pipeline scoping is a refinement that becomes valuable as deployments grow.
+
+**Why it's safe to defer (architectural readiness):**
+
+The current architecture already naturally supports per-pipeline scoping at every layer. No refactoring or breaking changes are needed to add it later:
+
+- **Database**: one new join table (`alert_rule_pipeline`) or an optional column. Additive Flyway migration, no changes to existing tables.
+- **API**: add an optional `pipelineIds` field to `AlertRuleRequest`. Null/empty = global (backward compatible).
+- **Evaluation engine**: the engine already produces a `Map<pipelineId, value>` from Prometheus results. Per-pipeline filtering is a one-line filter on that map before passing results to the state machine. No PromQL changes needed.
+- **State machine**: already operates per `(rule, pipeline)` pair. Zero change.
+- **UI**: an optional pipeline multi-select in the rule creation form. Purely additive.
 
 ## Proposed Solution: Platform-Native Alerting Engine
 
@@ -149,15 +173,27 @@ Alerts follow a three-state lifecycle inspired by Grafana/Prometheus. The "for" 
 
 Each fire/resolve cycle produces one **incident** row (`alert_event`). The row is created when the alert fires (with `resolved_at = NULL`) and updated with a resolution timestamp when the alert clears. If the same rule fires and resolves multiple times for the same pipeline, each cycle produces a separate incident row, preserving full history.
 
+### No-Data Behavior (Prometheus Staleness)
+
+When a pipeline's pod dies, Prometheus marks its time series as stale after ~5 minutes ([staleness docs](https://prometheus.io/docs/prometheus/latest/querying/basics/#staleness)). After the stale marker, the evaluation loop receives no data for that pipeline.
+
+The engine uses a **keep-last-state** strategy: FIRING alerts stay FIRING, PENDING alerts stay PENDING. This preserves the alert signal for root cause analysis and avoids masking failures where the pipeline died *because* of the condition that triggered the alert (e.g., source lag spiked, the operator didn't react, and the pod crashed).
+
+When the pipeline recovers and metrics resume, the evaluation loop picks it up again:
+- If the metric is below threshold, the alert resolves normally with a proper `resolvedAt` timestamp
+- If the metric is still above threshold, the alert continues in its current state (PENDING timer resumes from `pendingSince`, FIRING stays FIRING)
+
+The incident history shows the full duration from first fire to actual recovery, providing accurate data for post-mortem analysis.
+
 ### Severity Levels
 
-Each rule has a severity: **Critical**, **Warning**, or **Info**. Severity determines visual treatment and badge behavior:
+Each rule has a severity: **Critical**, **Warning**, or **Info**. Severity must differ in **both color and visual elements** — not just color — following [PatternFly's Status and Severity patterns](https://www.patternfly.org/patterns/status-and-severity). Each level uses a dedicated PatternFly severity icon that conveys urgency through shape and visual weight, ensuring accessibility for color-blind users.
 
-| Severity | Color | Badge |
-|----------|-------|-------|
-| **Critical** | Red (`--pf-v5-global--danger-color--100`) | Counted in alert badge |
-| **Warning** | Amber (`--pf-v5-global--warning-color--100`) | Counted in alert badge |
-| **Info** | Blue (`--pf-v5-global--info-color--100`) | Not counted in badge |
+| Severity | Color | Icon | Badge |
+|----------|-------|------|-------|
+| **Critical** | Red (`--pf-v5-global--danger-color--100`) | `rh-ui-severity-critical-fill` | Counted in alert badge |
+| **Warning** | Amber (`--pf-v5-global--warning-color--100`) | `rh-ui-severity-moderate-fill` | Counted in alert badge |
+| **Info** | Blue (`--pf-v5-global--info-color--100`) | `rh-ui-severity-none-fill` | Not counted in badge |
 
 ## Notification Channels
 
@@ -474,7 +510,7 @@ A notification badge in the application header bar, visible on every page:
 - Data source: `GET /api/alerts/rules`
 - **Metric** column: display `panelTitle` from the response
 - **Condition** column: formatted from `reduceFunction`, `operator`, `threshold`, and `forDuration`
-- **Severity** column: colored label chip using PatternFly Label component (`danger` for Critical, `warning` for Warning, `info` for Info)
+- **Severity** column: colored label chip with severity icon using PatternFly Label component (`danger` + `rh-ui-severity-critical-fill` for Critical, `warning` + `rh-ui-severity-moderate-fill` for Warning, `info` + `rh-ui-severity-none-fill` for Info)
 - **Status** toggle: calls `PUT /api/alerts/rules/{id}/enable` or `PUT /api/alerts/rules/{id}/disable`
 - **Firing indicator**: if a rule currently has firing alerts (cross-reference with `GET /api/alerts/status`), show a red dot or badge next to its name
 
@@ -524,7 +560,7 @@ A notification badge in the application header bar, visible on every page:
 | Operator | Dropdown | Static | `greater than`, `greater than or equal to`, `less than`, `less than or equal to`, `equal to`, `not equal to` |
 | Threshold | Numeric input | Static | Unit label updates dynamically based on selected panel's `unit` |
 | Duration | Dropdown | Static | Immediately (PT0S), 1 minute (PT1M), 2 minutes (PT2M), 5 minutes (PT5M), 10 minutes (PT10M), 15 minutes (PT15M), 30 minutes (PT30M) |
-| Severity | Radio buttons | Static | Critical (red indicator), Warning (amber), Info (blue). Default: Warning |
+| Severity | Radio buttons | Static | Critical (red, `rh-ui-severity-critical-fill`), Warning (amber, `rh-ui-severity-moderate-fill`), Info (blue, `rh-ui-severity-none-fill`). Default: Warning |
 | Channels | Checkbox list | `GET /api/alerts/channels` | Show info banner: "Alerts always appear in the platform UI (history page and alert badge)". If no channels exist, show link to Channels page |
 
 > **Note**: Operator, reduce function, severity, and duration values are all **static lists owned by the frontend**. They are not provided by a platform API endpoint. The backend accepts the corresponding enum values (`GREATER_THAN`, `LAST`, `CRITICAL`, `PT5M`, etc.) as documented in the API section above.
@@ -630,7 +666,7 @@ A paginated, filterable table showing all incidents. Each row is one incident, a
 - Data source: `GET /api/alerts/events` with filter query parameters
 - **Status** column: `"Firing"` when `resolvedAt` is null, `"Resolved"` when set
 - **Duration**: computed from `durationSeconds` in the response. Show "ongoing" suffix for firing incidents
-- **Severity**: colored label chip (PatternFly Label: `danger`, `warning`, `info`)
+- **Severity**: colored label chip with severity icon (PatternFly Label: `danger` + `rh-ui-severity-critical-fill`, `warning` + `rh-ui-severity-moderate-fill`, `info` + `rh-ui-severity-none-fill`)
 - Rows are color-coded by severity: subtle red tint for Critical, subtle amber for Warning
 - **Firing** incidents are pinned to the top of the list
 - Clicking a row expands the detail panel (use PatternFly expandable row pattern)
