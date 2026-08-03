@@ -233,6 +233,23 @@ Each channel supports a **test** action (`POST /api/alerts/channels/{id}/test`) 
 
 For resolved alerts, the payload includes `"status": "resolved"` and an additional `"resolvedAt"` timestamp.
 
+### Webhook Security (SSRF Protection)
+
+The Conductor runs inside the Kubernetes cluster with access to internal services (K8s API, databases, OTel Collector, etc.). A user-supplied webhook URL could target these internal endpoints, enabling Server-Side Request Forgery (SSRF).
+
+By default, the webhook notifier validates each URL at **send time** (not just at creation) by resolving the hostname via DNS and rejecting any address that falls in a non-public range:
+
+| Range | CIDR | Java check |
+|-------|------|------------|
+| Loopback | `127.0.0.0/8`, `::1` | `InetAddress.isLoopbackAddress()` |
+| Private | `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` | `InetAddress.isSiteLocalAddress()` |
+| Link-local | `169.254.0.0/16`, `fe80::/10` | `InetAddress.isLinkLocalAddress()` |
+| Unspecified | `0.0.0.0` | `InetAddress.isAnyLocalAddress()` |
+
+Validation at send time (rather than only at channel creation) prevents DNS rebinding attacks where a hostname resolves to a public IP during validation but to a private IP when the request is actually made.
+
+Operators who need internal webhook targets (e.g., an internal Slack relay or monitoring tool inside the cluster) can opt in via Helm: `alerting.webhook.allowPrivateNetworks: true`.
+
 ## REST API
 
 Base path: `/api/alerts`
