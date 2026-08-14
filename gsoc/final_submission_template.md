@@ -30,3 +30,5 @@ Add your worklog or release plan defined with your mentor
 List of articles or talks that you have done in releation of your GsoC project.
 
 ## Future Work
+
+Add details on future improvements that can be done to your GsoC project.
