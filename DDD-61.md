@@ -120,9 +120,10 @@ Each runtime contributes a thin adapter.
                              v
               BulkResponseClassifier
                    ├─ success
-                   ├─ transient     -> AdaptiveThrottle, bounded retry
-                   ├─ record-level  -> io.debezium.dlq.ErrorReporter
-                   └─ fatal         -> fail fast with a diagnostic message
+                   ├─ transient      -> AdaptiveThrottle, bounded retry
+                   ├─ record-level   -> io.debezium.dlq.ErrorReporter
+                   ├─ resource-fatal -> block that resource, then DLQ
+                   └─ task-fatal     -> fail fast with a diagnostic message
 ```
 
 **Module layout.**
@@ -574,9 +575,17 @@ There are exactly two ways it could:
   This is a deliberate omission, not an oversight: adding it later would require re-solving ordering, and it is the one Confluent property whose functionality we consciously decline to reproduce.
   It is called out as such in the parity matrix.
 
-* **Reduce each batch to at most one write per `_id`.** This uses the existing `io.debezium.sink.batch.DeduplicatingBuffer`, which `AbstractChangeEventSink` already selects by default (`keyed.message.batch.mode=deduplication`) whenever `primary.key.mode != none`.
+* **Reduce each batch to at most one write per resource and `_id`.** This uses the existing `io.debezium.sink.batch.DeduplicatingBuffer`, which `AbstractChangeEventSink` already selects by default (`keyed.message.batch.mode=deduplication`) whenever `primary.key.mode != none`.
   It is last-write-wins per key within the batch, which is exactly right for a document store: Elasticsearch holds current state, so intermediate states of a key inside one batch have no observable value.
   Beyond the throughput win on hot keys, this removes hazard (2) entirely: with one item per `_id` per request, a retried item cannot be overtaken by a sibling.
+
+  **The resource is part of the reduction key, not just the `_id`.** `DeduplicatingBuffer` keys on `BatchKey(CollectionId, key)`, so two topics resolving to two different indices never reduce against each other even when they carry identical `_id` values.
+  This matters because a single connector writing many indices is the default configuration here, not a special case (§4.1 resolves `${topic}` per record).
+  The one case where identical `_id`s genuinely do collide is several topics resolving to the *same* index, which §7.3 records as undefined by construction.
+
+* **One bulk request spans every resource in the batch.** A `Batch` is a flat list of records, each carrying its own `CollectionId`, and the Elasticsearch bulk API takes `_index` per item.
+  The batch is therefore issued as one request regardless of how many indices it touches, so the throughput reasoning above is independent of index count and the single-in-flight rule costs nothing extra to a connector fanning out across many indices.
+  This is a point where Elasticsearch is structurally better served than a relational target, which has to group a batch by table before it can build statements.
 
 * **`keyed.message.batch.mode=passthrough` is rejected at startup.** For the JDBC sink, passthrough is a legitimate default and reduction is a throughput optimisation.
   Here, reduction is part of the correctness argument.
@@ -707,7 +716,7 @@ The design targets both.
 
 #### 9.1 Classification
 
-Every bulk item outcome is classified into one of four buckets.
+Every bulk item outcome is classified into one of five buckets.
 The classifier is a table keyed on HTTP status plus the ES error `type`, so it is auditable and extensible rather than a fixed hard-coded set.
 
 | Bucket | Examples | Action |
@@ -715,15 +724,31 @@ The classifier is a table keyed on HTTP status plus the ES error `type`, so it i
 | **Success** | `created`, `updated`, `deleted`, `noop`, and `not_found` on a delete | Advance |
 | **Transient** | 429 `es_rejected_execution_exception`, 503 `unavailable_shards_exception`, `node_not_connected_exception`, `circuit_breaking_exception`, socket/read timeouts | Throttle and retry per §8 |
 | **Record-level, permanent** | `mapper_parsing_exception`, `document_parsing_exception`, `strict_dynamic_mapping_exception`, `illegal_argument_exception`, `version_conflict_engine_exception` (mode-dependent), `document_missing_exception` on a non-upsert update | Route to `ErrorReporter` |
-| **Fatal** | 401/403 `security_exception`, `cluster_block_exception` (index read-only), `index_closed_exception`, unsupported cluster version | Fail fast with a diagnostic message |
+| **Resource-fatal** | `cluster_block_exception` (index read-only), `index_closed_exception`, 403 `security_exception` naming a single index | Stop writing to that resource, fail the task only if every resource in the batch is affected (see below) |
+| **Task-fatal** | 401 `security_exception`, an authentication failure, a 403 that is not resource-scoped, unsupported cluster version | Fail fast with a diagnostic message |
 
 `error.classification.overrides` lets an operator move a specific ES error `type` between buckets without waiting for a release.
-It is a comma-separated list of `<error-type>:<bucket>` pairs, where `<error-type>` is the Elasticsearch error `type` string exactly as it appears in a bulk item response and `<bucket>` is one of `transient`, `record`, or `fatal`; for example `circuit_breaking_exception:record,illegal_argument_exception:transient`.
+It is a comma-separated list of `<error-type>:<bucket>` pairs, where `<error-type>` is the Elasticsearch error `type` string exactly as it appears in a bulk item response and `<bucket>` is one of `transient`, `record`, `resource_fatal`, or `task_fatal`; for example `circuit_breaking_exception:record,illegal_argument_exception:transient`.
 `success` is deliberately not an assignable bucket: reclassifying a failure as a success is how a document is lost silently, which Requirement 1 forbids.
 An unknown error type is accepted, because the point is to react to something the connector has not seen before, but an unknown bucket name is a startup error.
 This is a hedge against the fixed-set approach V1 takes with `MALFORMED_DOC_ERRORS`, where an error type outside the set cannot be routed differently without a code change.
 
-**The default for an unmatched outcome is `Fatal`, not `Transient`.** An exception from the bulk path that the table above does not classify, the `NullPointerException` of §10.1.1 being the canonical example, is treated as fatal and fails the task with the exception attached.
+**Why fatality is split by scope.** A connector writing many indices is the default here (§4.1, §7.2), and the failures above do not all have the same blast radius.
+An expired credential stops everything, but a single index closed by an administrator, or put into a read-only block by a flood-stage disk watermark, says nothing about the other resources the task is serving.
+Failing a task that is writing forty indices because one of them is blocked converts a local operational event into a total outage.
+
+The handling of a resource-fatal outcome is constrained by offsets, which is what rules out the obvious approach.
+Holding a blocked resource's records back while continuing to write the others cannot work: a batch is drawn across collections, so committing offsets for the resources that succeeded would advance past records for the resource that did not, and those records are then lost on restart.
+So a resource-fatal outcome is handled as follows:
+
+1. The resource is marked blocked, logged once at `WARN` naming the resource and the Elasticsearch error, and exposed as a metric (§11).
+2. Its items are retried on the §8 backoff while other resources continue to be written normally.
+3. If the block does not clear within `progress.stall.timeout.ms`, the resource's records are routed to the `ErrorReporter` exactly as record-level failures are, so offsets stay sound and the records are recoverable from the DLQ rather than dropped.
+4. If `errors.tolerance=none`, or if every resource in the batch is blocked, the task fails instead, because there is then no progress to protect.
+
+This keeps §9.3's contract intact: the task reports `RUNNING` only while it is genuinely writing something, and a wholly blocked connector still dies rather than idling.
+
+**The default for an unmatched outcome is `Task-fatal`, not `Transient`.** An exception from the bulk path that the table above does not classify, the `NullPointerException` of §10.1.1 being the canonical example, fails the task with the exception attached.
 Defaulting the unknown case to transient is precisely how a connector arrives at retrying forever while reporting `RUNNING`, and no unclassified condition is well enough understood to be assumed recoverable.
 An operator who knows better moves the specific error into the transient bucket with `error.classification.overrides`.
 
@@ -844,7 +869,7 @@ The description for `none` states plainly that it defeats TLS against an active 
 
 ### 11. Observability
 
-* **Metrics** (JMX, via the Debezium sink metrics base): records written, records skipped, records reported to the error handler, batches written, bulk request latency percentiles, bulk item outcomes by classification bucket, throttle events, current effective batch size, retry count, version conflicts, buffer depth, and, importantly for §9.3, milliseconds since the last successful bulk response.
+* **Metrics** (JMX, via the Debezium sink metrics base): records written, records skipped, records reported to the error handler, batches written, bulk request latency percentiles, bulk item outcomes by classification bucket, throttle events, current effective batch size, retry count, version conflicts, buffer depth, the number of resources currently blocked by a resource-fatal outcome (§9.1), the number of distinct resources written to, and, importantly for §9.3, milliseconds since the last successful bulk response.
 * **Resolved connection state**, exposed as attributes rather than left to log archaeology: the detected cluster version, the effective API compatibility mode, and any configured rate ceiling (§8).
   §10.1.1 explains why: in [#929](https://github.com/confluentinc/kafka-connect-elasticsearch/issues/929) the reported difficulty was largely that the effective compatibility mode could not be seen from outside the task.
 * **OpenLineage.** The connector emits lineage events through `debezium-openlineage-api`, naming the resolved Elasticsearch resources as output datasets, so an end-to-end source-to-sink lineage graph is available without extra wiring.
@@ -1029,6 +1054,11 @@ Steps 1 to 8 constitute a usable v1.
   Run it under both enforcement mechanisms of §7.4, and with a tuple key as well as a scalar one, since the SQL Server and MySQL binlog paths only exist in tuple form.
   Assert that a tuple arity mismatch is a record-level error rather than an arbitrary winner, and that MySQL in GTID mode is rejected at startup instead of ordering on a partial order.
   Benchmark the scripted guard against the plain `index` path, since § Concerns / Gaps leaves that cost unquantified.
+* **Fan-out across many indices**, which is the default configuration rather than a variant.
+  One connector consuming many topics must write many indices from a single bulk request, and two topics carrying the same `_id` to different indices must both survive batch reduction rather than one displacing the other (§7.2).
+  Per-topic overrides (§12.10) must resolve independently, so that two topics in one batch can use different `write.method` and `mapping.mode` settings.
+  Closing one index mid-run must leave the others writing and must not fail the task, and the blocked resource's records must reach the DLQ rather than being dropped once `progress.stall.timeout.ms` elapses (§9.1); closing every index must fail the task.
+  A date-based `collection.name.format` must be run across a rollover boundary, asserting that templates are applied to the new indices and that per-resource tracking does not grow without bound.
 * **Failure modes.** Cluster unavailability mid-batch, 429 storms, mapping conflicts, malformed documents, and `strict` mapping rejections, under each `errors.tolerance` setting, asserting both DLQ contents and the resulting task state.
 * **Health.** A wedged bulk request must transition the task to `FAILED` within `progress.stall.timeout.ms` with the last Elasticsearch error attached.
 * **Confluent parity.** A test matrix that exercises each row of §13, so parity is a verified property rather than a documented intention.
@@ -1083,6 +1113,19 @@ Once released, `primary.key.mode`, `document.id.separator`, and the §4.1 placeh
   The cost is asymmetric, which is why this is raised now rather than left to implementation.
   Normalising after release means renaming a shipped property; deciding now means one change to `debezium-sink` that has to serve JDBC and MongoDB as well, which is outside this document's scope but not outside its timing.
   Recommendation: raise it with the sink maintainers before this connector ships, keep `truncate.mode` connector-local for v1, and treat the name as provisional rather than building anything that would make lifting it harder.
+* **Flow control is global, but the destinations are not.** `AdaptiveThrottle` (§8) halves the effective batch size on a 429, and `bulk.size.bytes` caps the request as a whole.
+  Both are properties of the task, while the rejection that triggers them comes from one index, often one hot shard.
+  A single busy index therefore throttles every other index the connector serves, and because §7.2 puts one bulk request in flight, there is no second request through which the healthy resources could proceed at full rate.
+  Per-resource throttling is possible in principle, by partitioning a batch and pacing the contributions separately, but it interacts with the ordering argument and with offset commit in ways this document has not worked through.
+  Left as a known limitation for v1: the conservative behaviour is correct, merely slower than necessary, and the metrics of §11 should at least make it visible that one resource is pacing the rest.
+* **Metrics have no per-resource dimension.** §11 lists everything at task granularity.
+  On a connector writing one index that is the whole picture; on a connector writing fifty it cannot answer the first question an operator asks, which is *which* index stalled, and it undercuts §9.3 specifically, since progress-based health is defined on a signal that aggregates across resources.
+  The resource-fatal handling introduced in §9.1 makes this sharper, because a blocked resource is now a state the connector holds and must report.
+  A per-resource dimension on the write, error and latency metrics is the obvious answer; the reason it is a gap rather than a decision is cardinality, since `${date:pattern}` naming makes the resource set unbounded (see the next item), and unbounded JMX attributes are their own operational problem.
+* **`${date:pattern}` naming makes the resource set unbounded over time.** §4.1 offers date placeholders precisely so users can write daily or monthly indices, which is a normal Elasticsearch pattern.
+  But mapping generation (§6.3), the `_source` check (§5) and `ingest.pipeline.validate` (§4.4) are each specified as happening "before the first write to a resource", which implies per-resource state that grows without limit and is re-established at every rollover.
+  Two things need settling in implementation: the tracking structure must be bounded rather than a map that accumulates for the life of the task, and the rollover cost is a latency spike at a predictable instant, when every active topic resolves to a new index at once and each needs its template applied before the first write lands.
+  Neither is difficult, but both are invisible until a connector has been running across a date boundary, which is exactly the kind of thing a design document should name in advance.
 * **`debezium-sink` is still evolving.** `SinkConnectorConfig` carries an internal `enable.sces` flag for the shared sink framework, and `DebeziumSinkRecord` carries a `@TODO` about replacing Connect's `Struct`/`Schema`.
   Baselining on 3.7.0-SNAPSHOT (§1) means tracking that churn rather than avoiding it; the type-fidelity and ordering suites are what will catch a breaking change.
 * **`delete_by_query` cannot be made safe in general.** §5.1 removes the ordering hazard by draining and waiting, and `conflicts=abort` converts a concurrent write into a loud failure, but a document written by another producer during the scan still survives the truncate.
