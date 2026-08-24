@@ -76,11 +76,19 @@ Refactored the validate command's catalog integration following maintainer revie
 - **Issue:** [debezium/dbz#2363](https://github.com/debezium/dbz/issues/2363)
 - **Branch:** `dbz-2363-catalog-api-validation`
 
+### Debezium Server Contributions
+
+Contributions to the [debezium/debezium-server](https://github.com/debezium/debezium-server) repository made during the GSoC program:
+
+- **PR [#269](https://github.com/debezium/debezium-server/pull/269)** — Fix infinite loop when batch contains only heartbeat messages in Redis sink ([dbz#1386](https://github.com/debezium/dbz/issues/1386)) — closed
+- **PR [#305](https://github.com/debezium/debezium-server/pull/305)** — Add connector profiles to debezium-server-dist ([dbz#2421](https://github.com/debezium/dbz/issues/2421)) — closed
+- **PR [#306](https://github.com/debezium/debezium-server/pull/306)** — Add profile-based scope control for storage and scripting modules in debezium-server-dist ([dbz#2433](https://github.com/debezium/dbz/issues/2433)) — closed
+
 ---
 
 ### Worklog
 
-**Parent Tracker Issue:** [debezium/dbz#1723](https://github.com/debezium/dbz/issues/1723)
+**Parent Tracker Issue:** [debezium/dbz#2061](https://github.com/debezium/dbz/issues/2061)
 
 | Week | Dates | Task | Issue / PR |
 |------|-------|------|------------|
