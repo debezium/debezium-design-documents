@@ -1,0 +1,29 @@
+<svg width="680" height="280" viewBox="0 0 680 280" xmlns="http://www.w3.org/2000/svg" role="img">
+<title>Sort-merge diff decision logic</title>
+<desc>At each step, compare old[i].id to new[j].id. If old is smaller, the row was deleted and only the old pointer advances. If they are equal, compare checksums to classify as an update or unchanged, and advance both pointers. If new is smaller, the row was inserted and only the new pointer advances. Repeat until either array is exhausted.</desc>
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="#73726c" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+</defs>
+
+<rect x="200" y="40" width="280" height="56" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+<text x="340" y="58" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="600" fill="#2C2C2A">Compare old[i] vs new[j]</text>
+<text x="340" y="76" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="12" fill="#5F5E5A">by id, at current pointers</text>
+
+<line x1="250" y1="96" x2="135" y2="156" stroke="#73726c" stroke-width="1.5" marker-end="url(#arrow)"/>
+<line x1="340" y1="96" x2="340" y2="156" stroke="#73726c" stroke-width="1.5" marker-end="url(#arrow)"/>
+<line x1="430" y1="96" x2="545" y2="156" stroke="#73726c" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="45" y="156" width="180" height="56" rx="8" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>
+<text x="135" y="174" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="600" fill="#3C3489">Delete old[i]</text>
+<text x="135" y="192" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="12" fill="#534AB7">old.id &lt; new.id, i++</text>
+
+<rect x="250" y="156" width="180" height="56" rx="8" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>
+<text x="340" y="174" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="600" fill="#3C3489">Update / unchanged</text>
+<text x="340" y="192" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="12" fill="#534AB7">ids equal, i++ j++</text>
+
+<rect x="455" y="156" width="180" height="56" rx="8" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>
+<text x="545" y="174" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="600" fill="#3C3489">Insert new[j]</text>
+<text x="545" y="192" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="12" fill="#534AB7">old.id &gt; new.id, j++</text>
+
+<text x="340" y="248" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="12" fill="#5F5E5A">repeat until old[] or new[] is exhausted</text>
+</svg>
