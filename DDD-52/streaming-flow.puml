@@ -1,0 +1,60 @@
+@startuml streaming-flow
+!theme plain
+
+title Streaming Flow
+
+participant "ConnectorTask" as Task
+participant "StreamingSource" as Stream
+participant "Neo4j DB" as Neo4j
+participant "OffsetContext" as Offset
+participant "Kafka" as Kafka
+
+Task -> Stream: start streaming
+
+loop Poll loop (every poll.interval.ms)
+
+    Stream -> Offset: read current changeId
+    Offset --> Stream: changeId = "ABC123..."
+
+    Stream -> Neo4j: CALL db.cdc.query(\n  "ABC123...", selectors)
+    Neo4j --> Stream: [{id, txId, seq,\n  metadata, event}, ...]
+
+    alt No changes returned
+        Stream -> Stream: sleep poll.interval.ms
+    else Changes returned
+        loop For each change record
+
+            Stream -> Stream: classify eventType:\n"n" (node) or "r" (relationship)
+
+            alt eventType = "n" (Node)
+                Stream -> Stream: infer schema from\nevent properties
+                Stream -> Stream: resolve key from\ncached constraints
+                Stream -> Stream: determine op:\ncreate (c) / update (u)\n/ delete (d)
+                Stream -> Stream: build Debezium envelope\n(before, after, source)
+
+                loop For each matching captured label
+                    Stream -> Kafka: emit to\nprefix.db.node.Label
+                end
+
+                note over Stream
+                    If labels changed between
+                    before/after state:
+                    create -> new label topics
+                    delete -> removed label topics
+                end note
+
+            else eventType = "r" (Relationship)
+                Stream -> Stream: infer schema from\nevent properties
+                Stream -> Stream: resolve key from\ncached constraints
+                Stream -> Stream: build envelope with\nstart/end node refs
+                Stream -> Kafka: emit to\nprefix.db.relationship.TYPE
+            end
+
+            Stream -> Offset: update changeId
+
+        end
+    end
+
+end
+
+@enduml
