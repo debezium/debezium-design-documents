@@ -9,7 +9,7 @@
 
 The [Debezium](https://debezium.io/) JBang CLI is a command-line interface that enables users to easily set up, configure, validate, and build Debezium data pipelines without requiring deep knowledge of Kafka Connect REST APIs or raw configuration files.
 Built on top of Quarkus and JBang, the CLI compiles to a native binary and provides an intuitive developer experience for managing Debezium Server deployments.
-During GSoC 2026, the project was migrated to Quarkus CDI with GraalVM native image support, and extended with commands for connection and transform management, multi-environment switching, project initialization and validation, and a custom distribution build system.
+During GSoC 2026, building on the Quarkus CDI and GraalVM native image foundation, the CLI was extended with commands for pipeline, source, destination, connection and transform management, multi-environment switching, project initialization and validation, and a custom distribution build system.
 The `debezium validate` command checks a `dbz.yaml` project file for required fields, known connector and sink types, unresolved environment variable references, and connector property validation via the Debezium Platform Catalog API.
 The `debezium build` command — the project's standout feature — builds a minimal Debezium Server container image containing only the connectors and sinks the user actually needs, reducing the dependency surface and enabling enterprises to pass security scans that previously blocked Debezium adoption.
 The CLI is expected to serve as the primary user-facing interface for Debezium alongside the Debezium Platform, serving the role of `kubectl` for CDC pipeline lifecycle management.
@@ -20,23 +20,31 @@ The CLI is expected to serve as the primary user-facing interface for Debezium a
 
 All contributions are in the [debezium/jbang-catalog](https://github.com/debezium/jbang-catalog) repository.
 
-### Quarkus CDI Migration and Native Image Support
+### Pipeline, Source, and Destination Management (DBZ-2019, DBZ-2036)
 
-Migrated the jbang-catalog project from a plain Java setup to Quarkus CDI with GraalVM native image compilation. This established the foundation for all CLI commands and enabled distribution as a single self-contained native binary.
+Implemented `debezium pipeline`, `debezium source`, and `debezium destination` subcommands for full lifecycle management of CDC pipelines via the Debezium Platform API.
 
-- **PR [#14](https://github.com/debezium/jbang-catalog/pull/14)** — Initial Quarkus CDI migration (merged)
-- **PR [#15](https://github.com/debezium/jbang-catalog/pull/15)** — Native image build support (merged)
+- **PR [#13](https://github.com/debezium/jbang-catalog/pull/13)** — Pipeline management commands: list, get, create, update, delete ([dbz#2019](https://github.com/debezium/dbz/issues/2019)) (merged)
+- **PR [#14](https://github.com/debezium/jbang-catalog/pull/14)** — Source and destination management commands ([dbz#2036](https://github.com/debezium/dbz/issues/2036)) (merged)
 
 ### Connection and Transform Management (DBZ-2077)
 
 Implemented `debezium connection` and `debezium transform` subcommands for managing connector connections and Single Message Transforms (SMTs) via the Debezium Platform API.
 
 - **Issue:** [debezium/dbz#2077](https://github.com/debezium/dbz/issues/2077)
-- **Branch:** `dbz-2077-connection-transform-management`
+- **PR [#16](https://github.com/debezium/jbang-catalog/pull/16)** — Connection and transform management commands (merged)
 
-### Multi-Environment Switching
+### Catalog Commands and Pipeline Logs (DBZ-2143)
 
-Implemented `debezium switch <env>` command with multi-environment support via `~/.dbz/config.yaml`, allowing users to switch between different Debezium Platform deployments (e.g., local, staging, production) from the CLI. The spec was reviewed and confirmed by the mentor.
+Implemented `debezium catalog` subcommands for listing and retrieving catalog entries, and `debezium pipeline logs` for streaming pipeline log output.
+
+- **PR [#18](https://github.com/debezium/jbang-catalog/pull/18)** — Catalog commands and pipeline logs ([dbz#2143](https://github.com/debezium/dbz/issues/2143)) (merged)
+
+### Multi-Environment Switching (DBZ-2176)
+
+Implemented `debezium switch <env>` command with multi-environment support via `~/.dbz/config.yaml`, allowing users to switch between different Debezium Platform deployments (e.g., local, staging, production) from the CLI. The spec was reviewed and confirmed by the mentor. Also includes pipeline signal, source verify-signals, config management, and version commands.
+
+- **PR [#19](https://github.com/debezium/jbang-catalog/pull/19)** — Pipeline signal, source verify-signals, config management, environment switching, and version commands ([dbz#2176](https://github.com/debezium/dbz/issues/2176)) (merged)
 
 ### Init and Validate Commands (DBZ-2200)
 
@@ -61,7 +69,10 @@ This directly addresses a major enterprise adoption blocker: Debezium Server shi
 Fixed all GraalVM native image CI failures introduced by optional compression dependencies (Apache Commons Compress, brotli, zstd-jni, xz) and Apache HttpClient static initializers.
 
 - **Issue:** [debezium/dbz#2241](https://github.com/debezium/dbz/issues/2241)
-- **PR [#21](https://github.com/debezium/jbang-catalog/pull/21)** — Build command (pending merge)
+- **PR [#22](https://github.com/debezium/jbang-catalog/pull/22)** — Build command initial implementation (merged)
+- **PR [#23](https://github.com/debezium/jbang-catalog/pull/23)** — Network integration tests for build command (open)
+- **PR [#24](https://github.com/debezium/jbang-catalog/pull/24)** — Fix init templates to use correct default version (merged)
+- **PR [#25](https://github.com/debezium/jbang-catalog/pull/25)** — Build command v2: extract scripts from sources jar, configurable Maven Central URL, auto-init `~/.dbz/config.yaml` (open)
 
 ### Catalog API Validation and Inventory Module Refactor (DBZ-2363)
 
@@ -74,7 +85,7 @@ Refactored the validate command's catalog integration following maintainer revie
 - Updated CI workflow to reference the renamed module
 
 - **Issue:** [debezium/dbz#2363](https://github.com/debezium/dbz/issues/2363)
-- **Branch:** `dbz-2363-catalog-api-validation`
+- **PR [#21](https://github.com/debezium/jbang-catalog/pull/21)** — Catalog API validation and inventory module refactor (merged)
 
 ### Debezium Server Contributions
 
@@ -92,14 +103,17 @@ Contributions to the [debezium/debezium-server](https://github.com/debezium/debe
 
 | Week | Dates | Task | Issue / PR |
 |------|-------|------|------------|
-| 1–2 | May 25 – Jun 7 | Quarkus CDI migration, native image setup | PR #14, PR #15 |
-| 3 | Jun 8 – Jun 14 | Connection and transform management commands | [dbz#2077](https://github.com/debezium/dbz/issues/2077) |
+| 1–2 | May 25 – Jun 7 | Pipeline management, source and destination management commands | [PR #13](https://github.com/debezium/jbang-catalog/pull/13), [PR #14](https://github.com/debezium/jbang-catalog/pull/14) |
+| 3 | Jun 8 – Jun 14 | Connection and transform management commands | [dbz#2077](https://github.com/debezium/dbz/issues/2077), [PR #16](https://github.com/debezium/jbang-catalog/pull/16) |
+| 3–4 | Jun 8 – Jun 21 | Catalog commands, pipeline logs | [dbz#2143](https://github.com/debezium/dbz/issues/2143), [PR #18](https://github.com/debezium/jbang-catalog/pull/18) |
 | 4 | Jun 15 – Jun 21 | Multi-environment config design and spec review | — |
-| 5 | Jun 22 – Jun 28 | `debezium switch <env>`, `~/.dbz/config.yaml` | — |
-| 6 | Jun 29 – Jul 12 | `debezium init`, `debezium validate` | [dbz#2200](https://github.com/debezium/dbz/issues/2200), PR #20 |
-| 7–8 | Jul 13 – Jul 26 | `debezium build`, DistributionResolver, Jib Core | [dbz#2241](https://github.com/debezium/dbz/issues/2241), PR #21 |
-| 9–10 | Jul 27 – Aug 9 | GraalVM native image CI fixes | PR #21 |
-| 11–12 | Aug 10 – Aug 24 | Catalog API validation, inventory refactor, review feedback | [dbz#2363](https://github.com/debezium/dbz/issues/2363) |
+| 5 | Jun 22 – Jun 28 | `debezium switch <env>`, config management, pipeline signal, version commands | [dbz#2176](https://github.com/debezium/dbz/issues/2176), [PR #19](https://github.com/debezium/jbang-catalog/pull/19) |
+| 6 | Jun 29 – Jul 12 | `debezium init`, `debezium validate` | [dbz#2200](https://github.com/debezium/dbz/issues/2200), [PR #20](https://github.com/debezium/jbang-catalog/pull/20) |
+| 7–8 | Jul 13 – Jul 26 | `debezium build`, DistributionResolver, Jib Core | [dbz#2241](https://github.com/debezium/dbz/issues/2241), [PR #22](https://github.com/debezium/jbang-catalog/pull/22) |
+| 9–10 | Jul 27 – Aug 9 | GraalVM native image CI fixes, init template fixes, network integration tests | [PR #23](https://github.com/debezium/jbang-catalog/pull/23), [PR #24](https://github.com/debezium/jbang-catalog/pull/24) |
+| 11–12 | Aug 10 – Aug 24 | Catalog API validation, inventory module refactor | [dbz#2363](https://github.com/debezium/dbz/issues/2363), [PR #21](https://github.com/debezium/jbang-catalog/pull/21) |
+| Post | Aug 25 – present | Build command v2: review fixes, sources jar extraction, configurable Maven Central URL, `~/.dbz` auto-init | [PR #25](https://github.com/debezium/jbang-catalog/pull/25) |
+| — | Throughout | Debezium Server contributions (connector profiles, scope control, Redis sink fix) | [debezium-server #269](https://github.com/debezium/debezium-server/pull/269), [#305](https://github.com/debezium/debezium-server/pull/305), [#306](https://github.com/debezium/debezium-server/pull/306) |
 
 ---
 
