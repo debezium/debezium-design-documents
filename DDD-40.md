@@ -13,110 +13,108 @@ Tools like `kubectl`, the AWS CLI, and the Docker CLI demonstrate that a well-de
 
 ## Goals
 
-- Provide a single `dbz` binary that covers the complete CDC developer journey: scaffold → build → push → deploy → monitor.
-- Allow developers to assemble a **trimmed Debezium Server** containing only the connectors and sinks they need, without requiring Maven or a JVM to be pre-installed.
+- Provide a single `debezium` binary that covers the complete CDC developer journey: scaffold → build → deploy → monitor.
+- Allow developers to assemble a **trimmed Debezium Server** containing only the connectors and sinks they need.
 - Wrap the full **Debezium Platform REST API** so that all pipeline lifecycle operations (create, update, delete, signal, log tail) are available from the terminal.
-- Produce a **native binary** (via GraalVM) with sub-50ms startup time, suitable for use in CI/CD pipelines.
-- Integrate with the existing Debezium ecosystem: live inside the `debezium/debezium` monorepo, share the Debezium BOM, and follow existing versioning and CI/CD conventions.
+- Produce a **native binary** (via GraalVM) with fast startup time, suitable for use in CI/CD pipelines.
+- Support **multi-environment switching** so developers can target local, staging, and production Platform instances from a single CLI.
 
 ## Non-goals
 
 - The CLI will not replace the Debezium Platform UI. It wraps the same REST API the UI uses.
 - The CLI will not manage Kafka Connect-based connectors directly. It targets Debezium Server and the Debezium Platform.
 - The CLI will not implement its own CDC engine or connector logic.
-- Windows native binary support is out of scope for the initial release (tracked as a stretch goal).
+- Windows native binary support is out of scope for the initial release.
 
 ## Proposed Changes
 
 ### System Overview
 
-The Debezium CLI (`dbz`) is organized into two subsystems that connect into a single end-to-end developer journey:
+The Debezium CLI (`debezium`) is organized into two subsystems that connect into a single end-to-end developer journey:
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║                            dbz  CLI  (Unified)                              ║
+║                       debezium  CLI  (Unified)                              ║
 ╠═════════════════════════════════════╦════════════════════════════════════════╣
 ║       BUILD SUBSYSTEM               ║       PLATFORM SUBSYSTEM               ║
 ║  ─────────────────────────────────  ║  ────────────────────────────────────  ║
-║   dbz init  --source  --sink        ║   dbz pipeline  list / get /           ║
-║   dbz validate                      ║                 create / update /      ║
-║   dbz build                         ║                 delete / logs /        ║
-║   dbz build --image                 ║                 signal                 ║
-║   dbz push  --registry <url>        ║   dbz source    list / get / create …  ║
-║                                     ║   dbz destination  …                   ║
-║  [ Reads: dbz.yaml ]                ║   dbz connection   validate / schemas  ║
-║  [ Uses:  Maven Resolver API ]      ║   dbz transform    …                   ║
-║  [ Packs: Jib (OCI image) ]         ║   dbz catalog   list / get             ║
-║                                     ║   dbz pipeline logs --stream  (WS)     ║
+║   debezium init  --source  --sink   ║   debezium pipeline  list / get /      ║
+║   debezium validate                 ║                 create / update /      ║
+║   debezium build                    ║                 delete / logs /        ║
+║   debezium build --image            ║                 signal                 ║
+║   debezium push  (future)           ║   debezium source    list / get / …    ║
+║                                     ║   debezium destination  …              ║
+║  [ Reads: dbz.yaml ]                ║   debezium connection   validate / …   ║
+║  [ Uses:  Maven (ProcessBuilder) ]  ║   debezium transform    …              ║
+║  [ Packs: Jib Core (OCI image) ]    ║   debezium catalog   list / get        ║
+║                                     ║   debezium switch <env>                ║
 ╚══════════════╦══════════════════════╩═══════════════════╦════════════════════╝
                ║                                          ║
-               ║  push image                              ║  REST / WebSocket
+               ║  push image (future)                     ║  REST / WebSocket
                ▼                                          ▼
 ╔══════════════════════════╗             ╔═══════════════════════════════════╗
 ║    Container Registry    ║             ║      Debezium Platform            ║
 ║  ──────────────────────  ║             ║  ───────────────────────────────  ║
 ║   • Docker Hub           ║             ║   conductor (Quarkus REST API)    ║
-║   • GitHub GHCR          ║  ◄──────────║   • /api/pipelines  (CRUD)        ║
-║   • Custom registry      ║  pull image ║   • /api/sources                  ║
+║   • GitHub GHCR          ║             ║   • /api/pipelines  (CRUD)        ║
+║   • Custom registry      ║             ║   • /api/sources                  ║
 ║                          ║             ║   • /api/destinations              ║
-╚══════════════╦═══════════╝             ║   • /api/connections               ║
-               ║                         ║   • /api/catalog                   ║
-               ║  deploy                 ║   • WS  log stream                 ║
-               ▼                         ╚═══════════════════════════════════╝
-╔══════════════════════════╗
-║    Debezium Server       ║
-║  ──────────────────────  ║
-║   CDC Engine (Quarkus)   ║
-║   • Postgres Connector   ║
-║   • MySQL Connector      ║
-║   • Kafka Sink           ║
-║   • Custom Sink          ║
-╚══════════════════════════╝
+╚══════════════════════════╝             ║   • /api/connections               ║
+                                         ║   • /api/catalog                   ║
+                                         ╚═══════════════════════════════════╝
 
   Developer Journey:
   ─────────────────
-  $ dbz init --source postgres --sink kafka     ← scaffold dbz.yaml
-  $ dbz build --image                           ← assemble trimmed server image
-  $ dbz push --registry ghcr.io/myorg           ← push to registry
-  $ dbz pipeline create --file pipeline.yaml    ← Platform picks up image & runs CDC
-  $ dbz pipeline logs --stream <id>             ← live log tail via WebSocket
+  $ debezium init --source postgres --sink kafka     ← scaffold dbz.yaml
+  $ debezium validate                                ← validate against catalog API
+  $ debezium build --image                           ← assemble trimmed server image
+  $ debezium pipeline create --file pipeline.yaml    ← Platform runs CDC pipeline
+  $ debezium pipeline logs <id>                      ← fetch pipeline logs
 ```
 
-The **Build Subsystem** handles the local developer experience — scaffolding config, assembling a trimmed Debezium Server, and packaging it as a container image. The **Platform Subsystem** handles the operational experience — talking to a running Debezium Platform instance to create, manage, and observe pipelines via its REST API. The output of the Build Subsystem (a container image in a registry) becomes the input to the Platform Subsystem (a pipeline that references that image).
+The **Build Subsystem** handles the local developer experience — scaffolding config, assembling a trimmed Debezium Server, and packaging it as a container image. The **Platform Subsystem** handles the operational experience — talking to a running Debezium Platform instance to create, manage, and observe pipelines via its REST API.
 
 ```mermaid
 flowchart TD
-    A["$ dbz init --source postgres --sink kafka"] --> B["dbz.yaml generated\nScaffold with connector + sink config template"]
-    B --> C["$ dbz build --image"]
-    C --> D["Maven Resolver API\nResolves connector JARs only"]
-    C --> E["Jib — OCI image build\nNo Docker daemon required"]
-    D --> F["$ dbz push --registry ghcr.io/myorg"]
-    E --> F
-    F --> G["Container Registry\nDocker Hub / GitHub GHCR / Custom Registry"]
-    G --> H["$ dbz pipeline create --file pipeline.yaml\nDebezium Platform REST API • POST /api/pipelines"]
-    H --> I["Pipeline created\nIn Debezium Platform"]
-    H --> J["Image pulled\nFrom Container Registry"]
-    I --> K["Debezium Server starts\nCDC pipeline running • Events flowing to sink"]
-    J --> K
-    K --> L["$ dbz pipeline logs --stream &lt;id&gt;"]
-    L --> M["Live log stream via WebSocket\nReal-time CDC events visible in terminal"]
+    A["$ debezium init --source postgres --sink kafka"] --> B["dbz.yaml generated\nScaffold with connector + sink config template"]
+    B --> C["$ debezium validate\nChecks required fields, connector type, env vars, catalog API"]
+    C --> D["$ debezium build --image"]
+    D --> E["DistributionResolver\nDownloads POM + sources jar from Maven Central"]
+    E --> F["Maven (ProcessBuilder)\nmvn package -P custom-distribution"]
+    F --> G["Debezium Server zip assembled\nOnly selected connector + sink included"]
+    G --> H["Jib Core — OCI Image Assembly\nNo Docker daemon required"]
+    H --> I["OCI image ready locally"]
+    I --> J["$ debezium pipeline create --file pipeline.yaml\nDebezium Platform REST API • POST /api/pipelines"]
+    J --> K["Pipeline running\nCDC events flowing to sink"]
+    K --> L["$ debezium pipeline logs &lt;id&gt;"]
+    L --> M["Log output in terminal"]
 ```
 
 ---
 
-### Module Structure
+### Repository and Module Structure
 
-The CLI will live as a new Maven module `debezium-cli` inside the main `debezium/debezium` monorepo. This placement ensures it shares the Debezium BOM, is versioned together with all other components, and benefits from the existing CI/CD infrastructure.
+The CLI lives in the **`debezium/jbang-catalog`** repository as a JBang-based application. It is structured as a multi-module Maven project:
 
-Internal package structure:
+- `debezium-jbang-core` — entry point (`DebeziumJBangMain`), all commands, configuration, REST clients, and output formatting
+- `debezium-jbang-inventory` — static connector registry (`connectors.yaml`) mapping connector names to Maven artifact IDs
+- `debezium-jbang-it` — integration tests
 
-- `io.debezium.cli` — entry point, top-level `DbzCommand` (Picocli root)
-- `io.debezium.cli.build` — Build Subsystem: init, validate, build, push commands
-- `io.debezium.cli.platform` — Platform Subsystem: pipeline, source, destination, connection, transform, catalog commands
-- `io.debezium.cli.config` — CLI config management, `dbz.yaml` parsing, env var interpolation
-- `io.debezium.cli.client` — Quarkus REST client interfaces for the Platform API
-- `io.debezium.cli.output` — Output formatters (table, JSON, plain)
-- `io.debezium.cli.manifest` — Connector manifest registry (connector name → Maven coordinates)
+Internal package structure inside `debezium-jbang-core`:
+
+- `io.debezium.jbang.core` — entry point, Quarkus main
+- `io.debezium.jbang.core.commands.build` — Build Subsystem: `BuildCommand`, `DistributionResolver`
+- `io.debezium.jbang.core.commands.init` — `InitCommand`, Qute templates
+- `io.debezium.jbang.core.commands.validate` — `ValidateCommand`, `PropertyValidator` composite
+- `io.debezium.jbang.core.commands.pipeline` — pipeline CRUD + logs + signal
+- `io.debezium.jbang.core.commands.source` — source CRUD + verify-signals
+- `io.debezium.jbang.core.commands.destination` — destination CRUD
+- `io.debezium.jbang.core.commands.connection` — connection CRUD + validate + schemas + collections
+- `io.debezium.jbang.core.commands.transform` — transform CRUD
+- `io.debezium.jbang.core.commands.catalog` — catalog list/get
+- `io.debezium.jbang.core.commands.config` — `ConfigCommand` (get/set)
+- `io.debezium.jbang.core.configuration` — `Configuration` YAML model, `~/.dbz/config.yaml` management
+- `io.debezium.jbang.core.common` — `Printer`, shared HTTP client utilities
 
 ---
 
@@ -124,21 +122,21 @@ Internal package structure:
 
 | Component | Choice | Reason |
 |---|---|---|
-| CLI Framework | Quarkus CLI + Picocli | Consistent with Platform backend; Picocli provides subcommands, auto-generated help, shell completion |
-| HTTP Client | Quarkus REST Client (JAX-RS) | Native Quarkus integration, type-safe REST calls against Platform API |
-| WebSocket Client | Quarkus WebSocket client | For live pipeline log streaming (`dbz pipeline logs --stream`) |
-| Build artifact | Native binary via GraalVM | Fast startup (<50ms), no JVM required, single distributable binary |
-| Container building | Jib | Builds OCI images without a Docker daemon — better for CI/CD |
-| Config format | YAML (`dbz.yaml`) | Human-readable, familiar to Debezium users |
-| Repository | New module `debezium-cli` inside `debezium/debezium` | Shares BOM, versioned together with the ecosystem |
+| CLI Framework | Quarkus + Picocli | Native Quarkus CDI integration; Picocli provides subcommands, auto-generated help, shell completion |
+| HTTP Client | Quarkus REST Client (JAX-RS) | Type-safe REST calls against Platform API |
+| Build artifact | Native binary via GraalVM | Fast startup, no JVM required, single distributable binary |
+| Distribution assembly | Maven (ProcessBuilder) | Spawns `mvn package -P custom-distribution`; downloads POM and assembly descriptor from Maven Central |
+| Container building | Jib Core | Builds OCI images without a Docker daemon |
+| Config format | YAML (`dbz.yaml` project config; `~/.dbz/config.yaml` user config) | Human-readable, familiar to Debezium users |
+| Repository | `debezium/jbang-catalog` | JBang-based CLI alongside existing catalog tooling |
 
 ---
 
 ### CLI Framework Design — Picocli Command Hierarchy
 
-The CLI is built using **Quarkus CLI + Picocli**. The root `DbzCommand` holds global options like `--output` and `--quiet`. Each subsystem (build, platform) is a command group. Each resource (pipeline, source, destination) is a subcommand group, and each action (list, get, create) is a leaf command.
+The CLI is built using **Quarkus + Picocli**. The root `DebeziumJBangMain` is registered as a `@QuarkusMain` and constructs the full Picocli command tree at startup. Each resource (pipeline, source, destination) is a subcommand group, and each action (list, get, create) is a leaf command.
 
-A `@Mixin` class called `PlatformClientMixin` is shared across all Platform Subsystem commands. It reads the platform URL from `~/.dbz/config.yaml`, instantiates the REST client, and handles authentication. This eliminates duplicated boilerplate across the 30+ platform commands and ensures consistent error handling when the Platform is unreachable.
+On first run, the CLI automatically initializes `~/.dbz/config.yaml` via `Configuration.initializeIfAbsent()` — this creates a default empty config file so subsequent `config set` and `switch` commands have a file to write to.
 
 ---
 
@@ -147,61 +145,63 @@ A `@Mixin` class called `PlatformClientMixin` is shared across all Platform Subs
 **Build Subsystem — assembles a trimmed Debezium Server:**
 
 ```bash
-dbz init --source postgres --sink kafka   # scaffold dbz.yaml config template
-dbz validate                              # validate dbz.yaml against schema
-dbz build                                 # assemble a trimmed JAR
-dbz build --image                         # produce an OCI container image
-dbz push                                  # push image to container registry
-dbz push --registry ghcr.io/myorg
+debezium init --source postgres --sink kafka   # scaffold dbz.yaml config template
+debezium validate                              # validate dbz.yaml (fields + catalog API)
+debezium build                                 # assemble trimmed server distribution zip
+debezium build --image                         # produce an OCI container image via Jib Core
+debezium push                                  # push image to registry (future — dbz#2438)
 ```
 
 **Platform Subsystem — wraps the Debezium Platform REST API:**
 
 ```bash
 # Pipelines
-dbz pipeline list
-dbz pipeline get <id>
-dbz pipeline create --file pipeline.yaml
-dbz pipeline update <id> --file pipeline.yaml
-dbz pipeline delete <id>
-dbz pipeline logs <id>                     # download full logs
-dbz pipeline logs --stream <id>            # live log tail via WebSocket
-dbz pipeline signal <id> --type <type>
+debezium pipeline list
+debezium pipeline get <id>
+debezium pipeline create --file pipeline.yaml
+debezium pipeline update <id> --file pipeline.yaml
+debezium pipeline delete <id>
+debezium pipeline logs <id>
+debezium pipeline signal <id> --type <type>
 
 # Sources
-dbz source list | get | create | update | delete
-dbz source verify-signals <id>
+debezium source list | get | create | update | delete
+debezium source verify-signals <id>
 
 # Destinations
-dbz destination list | get | create | update | delete
+debezium destination list | get | create | update | delete
 
 # Connections
-dbz connection list | get | create | update | delete
-dbz connection validate --file conn.yaml
-dbz connection schemas
-dbz connection collections <id>
+debezium connection list | get | create | update | delete
+debezium connection validate --file conn.yaml
+debezium connection schemas
+debezium connection collections <id>
 
 # Transforms
-dbz transform list | get | create | update | delete
+debezium transform list | get | create | update | delete
 
 # Catalog — discover available connectors
-dbz catalog list
-dbz catalog list --type source
-dbz catalog get <type> <class>
+debezium catalog list
+debezium catalog get <type> <class>
+
+# Multi-environment switching
+debezium switch <env>       # switch active environment in ~/.dbz/config.yaml
 
 # CLI config
-dbz config set platform-url http://localhost:8080
-dbz config get
-dbz version
+debezium config set platform-url http://localhost:8080
+debezium config get
+debezium version
 ```
 
 ---
 
-### Configuration Management — `dbz.yaml`
+### Configuration Management
 
-The `dbz.yaml` file is the central configuration artifact of the Build Subsystem. It describes the CDC pipeline (connector, sink, database config) and controls the build process (image name, registry, tag). Running `dbz init --source postgres --sink kafka` scaffolds a fully commented template.
+#### Project config — `dbz.yaml`
 
-The config file supports **environment variable interpolation** using `${VAR_NAME}` syntax, keeping credentials out of version control. The CLI's own configuration (Platform URL, registry credentials) is stored separately in `~/.dbz/config.yaml`, mirroring how `kubectl` and the AWS CLI separate project config from user-level credentials.
+The `dbz.yaml` file describes the CDC pipeline (connector, sink, database config) and controls the build process (image name, base image). Running `debezium init --source postgres --sink kafka` scaffolds a template using Qute.
+
+The config file supports **environment variable interpolation** using `${VAR_NAME}` syntax, keeping credentials out of version control.
 
 Example `dbz.yaml`:
 
@@ -224,161 +224,119 @@ sink:
   config:
     producer.bootstrap.servers: localhost:9092
     topic.prefix: cdc
-
-build:
-  image:
-    name: debezium-server
-    tag: postgres-kafka-latest
-    registry: ghcr.io/myorg
 ```
 
+#### User config — `~/.dbz/config.yaml`
+
+The user-level config stores per-environment Platform URLs, the active environment, optional Maven Central URL override, optional local Maven repository path, and base image override. It is created automatically on first CLI run.
+
+Example `~/.dbz/config.yaml`:
+
+```yaml
+default: local
+environments:
+  local:
+    url: http://localhost:8080
+  staging:
+    url: http://staging.example.com:8080
+mavenCentralUrl: https://repo1.maven.org/maven2/
+mavenLocalRepo: ""
+baseImage: ""
+```
+
+Running `debezium switch staging` updates the `default` field to `staging`, and all subsequent Platform commands target that environment.
+
 ---
 
-### `dbz init` — Template Scaffolding
+### `debezium init` — Template Scaffolding
 
-When a user runs `dbz init --source postgres --sink kafka`, the CLI uses **Qute** (Quarkus's built-in templating engine) to render a `dbz.yaml` from bundled per-connector template files. Each connector template includes connector-specific required fields with inline comments. Adding support for a new connector requires only a new Qute template — no changes to the `init` command logic.
-
-Template rendering also performs **connector compatibility validation** at init time — if the source and sink combination is known to be incompatible, the CLI warns immediately rather than at build time.
+When a user runs `debezium init --source postgres --sink kafka`, the CLI uses **Qute** (Quarkus's built-in templating engine) to render a `dbz.yaml` from bundled per-connector template files. Each connector template includes connector-specific required fields with inline comments. Adding support for a new connector requires only a new Qute template — no changes to the `init` command logic.
 
 ---
 
-### `dbz validate` — Two-Level Validation
+### `debezium validate` — Multi-Level Validation
 
-The `dbz validate` command performs two levels of validation:
+The `debezium validate` command uses a **composite `PropertyValidator` pattern** to run multiple validation passes in sequence:
 
-1. **Schema validation** — checks that all required fields are present, values match their expected types, and no unknown fields are present. Implemented using a JSON Schema validator against a bundled schema file. Adding a new required field requires only updating the schema file.
+1. **`RequiredFieldValidator`** — checks that all required fields are present (`version`, `name`, `source.type`, `sink.type`).
+2. **`EnumValueValidator`** — verifies that `source.type` and `sink.type` match known entries in `connectors.yaml` (the inventory module).
+3. **Environment variable check** — detects unresolved `${VAR_NAME}` references and warns when those variables are not set in the shell.
+4. **Catalog API validation** — when a Debezium Platform conductor is running, calls `/api/catalog` to validate connector property values against the live schema. This pass is skipped gracefully when the Platform is unreachable.
 
-2. **Semantic validation** — checks things JSON Schema cannot express: whether the connector name matches a known manifest entry, whether the sink is compatible with the source, and whether referenced environment variables exist in the current shell. Each failure produces a clear, actionable error message.
+Each validator is a separate class implementing `PropertyValidator`, making the suite easy to extend.
 
 ---
 
-### `dbz build` — Trimmed Server Assembly
+### `debezium build` — Trimmed Server Assembly
 
-Debezium Server today ships as a fat JAR containing every connector and sink. A user who only needs Postgres-to-Kafka still downloads and runs a JAR with all connectors included. The CLI solves this by assembling a **trimmed server** containing only what the user needs.
+The `debezium build` command directly addresses a major enterprise adoption blocker: Debezium Server ships with all connectors and sinks bundled, causing companies to fail security scans due to CVEs in connectors they do not use. By building an image with only the required connector and sink, the attack surface is reduced.
 
-**How `dbz build` works:**
+**How `debezium build` works (implemented via `DistributionResolver`):**
 
-1. Parse `dbz.yaml` to identify the connector + sink combination
-2. Look up the **connector manifest** (bundled with the CLI binary) that maps `postgres` → `io.debezium:debezium-connector-postgres:${version}`
-3. Use the **embedded Maven Resolver API** (no Maven installation required) to resolve only the needed JAR dependency graph
-4. Assemble a Debezium Server runner with the resolved classpath
-5. Optionally wrap in an OCI image via **Jib** (`dbz build --image`)
+1. Parse `dbz.yaml` to identify the connector + sink combination.
+2. Resolve the active Debezium Server version from the inventory.
+3. Download the `debezium-server-dist-{version}.pom` from Maven Central (configurable via `mavenCentralUrl` in `~/.dbz/config.yaml`).
+4. Download the `debezium-server-dist-{version}-sources.jar` and extract the assembly descriptor (`server-distribution.xml`) and distro scripts into a temporary project directory.
+5. Patch the POM to ensure the `custom-distribution` profile has `debezium-server-core`, the `maven-assembly-plugin`, and any explicit connector/sink artifacts needed for older releases that predate connector profiles.
+6. Spawn `mvn package -P custom-distribution,<connector-profile>,<sink-profile> -DskipTests` via **ProcessBuilder**, streaming its output to the terminal.
+7. Copy the resulting zip to `target/debezium-server-{version}.zip`.
+8. If `--image` is passed, use **Jib Core** to layer the distribution into an OCI image without requiring a Docker daemon.
 
-The classpath assembly produces a directory of JARs rather than a single fat JAR. Jib layers these efficiently in the container image — stable dependencies (Debezium core, Quarkus runtime) in lower cached layers, frequently changing connector JARs in upper layers — making repeat `dbz push` operations significantly faster.
+If `mavenLocalRepo` is set in `~/.dbz/config.yaml`, it is passed to Maven as `-Dmaven.repo.local`. Otherwise Maven uses its default `~/.m2` cache — no `-D` parameter is passed.
 
 ```mermaid
 flowchart TD
-    A["$ dbz build --image\nUser runs the build command in terminal"] --> B["Parse dbz.yaml\nReads source type, sink type, version, image config"]
-    B --> C["Connector Manifest Lookup\nMaps postgres → io.debezium:debezium-connector-postgres:3.x"]
-    C --> D["Maven Resolver API — embedded, no mvn required\nResolves full transitive dependency graph for selected connector + sink"]
-    D --> E["Debezium Core JARs\nStable — cached in lower layer"]
-    D --> F["Connector JARs\nChanges per connector type"]
-    D --> G["Sink JARs\nChanges per sink type"]
-    E --> H["Jib — OCI Image Assembly\nNo Docker daemon required"]
-    F --> H
-    G --> H
-    H --> L1["Layer 1 — Base JRE Image\neclipse-temurin:17 • Stable, cached across all builds"]
-    L1 --> L2["Layer 2 — Debezium Core JARs\nStable deps • Cached as long as Debezium version unchanged"]
-    L2 --> L3["Layer 3 — Connector + Sink JARs\nChanges only when connector/sink type or version changes"]
-    L3 --> L4["Layer 4 — Config + Entrypoint\ndbz.yaml • application.properties • startup script"]
-    L4 --> J["OCI Image ready → dbz push --registry ghcr.io/myorg\nImage pushed to registry • Platform pulls and deploys CDC pipeline"]
+    A["$ debezium build --image"] --> B["Parse dbz.yaml\nReads source type, sink type, version"]
+    B --> C["DistributionResolver\nDownload POM from Maven Central"]
+    C --> D["Download sources jar\nExtract assembly descriptor + distro scripts"]
+    D --> E["Patch POM\nEnsure custom-distribution profile is complete"]
+    E --> F["ProcessBuilder: mvn package\n-P custom-distribution,connector,sink"]
+    F --> G["target/debezium-server-{version}.zip\nOnly selected connector + sink included"]
+    G --> H["Jib Core — OCI Image\nNo Docker daemon required"]
+    H --> I["OCI image ready locally\nReady for debezium push (future)"]
 ```
 
 ---
 
-### Connector Manifest
+### Connector Inventory
 
-The connector manifest is a YAML file bundled inside the CLI binary at compile time. It maps connector names to Maven coordinates and supported version ranges:
+The connector inventory is a YAML file (`connectors.yaml`) bundled inside the `debezium-jbang-inventory` module. It maps connector names to Maven artifact IDs and supported sink types:
 
 ```yaml
 connectors:
   postgres:
-    artifact: io.debezium:debezium-connector-postgres
-    versions: ["2.7.x", "3.0.x", "3.1.x"]
+    artifact: debezium-connector-postgres
     sinks: [kafka, http, pulsar, redis]
   mysql:
-    artifact: io.debezium:debezium-connector-mysql
-    versions: ["2.7.x", "3.0.x", "3.1.x"]
+    artifact: debezium-connector-mysql
     sinks: [kafka, http, pulsar, redis]
 ```
 
-For users who need a connector version not in the bundled manifest (e.g. a snapshot build or community connector), `dbz.yaml` supports an **override mechanism** to specify a custom Maven coordinate directly.
+The `ConnectorRegistry` class (in `debezium-jbang-core`) reads this file at startup and is used by both `debezium validate` and `debezium build` for connector resolution and validation.
 
 ---
 
-### `dbz push` — Registry Authentication
+### `debezium push` — Registry Authentication (Future)
 
-The CLI reads credentials from the user's existing **Docker credential store** (`~/.docker/config.json`) using the same resolution logic as Docker CLI and Jib. For CI/CD environments, credentials are also accepted via environment variables (`DBZ_REGISTRY_USERNAME`, `DBZ_REGISTRY_PASSWORD`) or `~/.dbz/config.yaml`.
+`debezium push` ([dbz#2438](https://github.com/debezium/dbz/issues/2438)) is the near-term follow-up feature. It will authenticate and push the assembled OCI image to a registry, with credential resolution from:
 
-Resolution order: environment variables → `~/.dbz/config.yaml` → `~/.docker/config.json`.
+1. Environment variables (`DBZ_REGISTRY_USERNAME`, `DBZ_REGISTRY_PASSWORD`)
+2. `~/.dbz/config.yaml`
+3. `~/.docker/config.json` (Docker credential store)
 
 ---
 
 ### Platform REST Client
 
-The CLI integrates with the Debezium Platform through its REST API, which exposes an OpenAPI specification at `/q/openapi`. The CLI uses a **Quarkus REST Client** interface registered against the Platform's base URL — type-safe, with JSON serialization/deserialization via Jackson.
+The CLI integrates with the Debezium Platform through its REST API. Each resource group (pipelines, sources, destinations, connections, transforms, catalog) has a dedicated typed Quarkus REST Client interface. The active Platform URL is read from `~/.dbz/config.yaml` based on the currently active environment.
 
-```java
-@RegisterRestClient(configKey = "debezium-platform-api")
-@Path("/api")
-public interface PlatformClient {
-
-    @GET @Path("/pipelines")
-    List<Pipeline> listPipelines();
-
-    @POST @Path("/pipelines")
-    Response createPipeline(PipelineRequest request);
-
-    @GET @Path("/pipelines/{id}/logs")
-    String downloadLogs(@PathParam("id") String id);
-
-    // ... all endpoints
-}
-```
-
-When the Platform returns a 4xx or 5xx response, the CLI extracts the error body, formats it clearly, and exits with a non-zero exit code. The `--quiet` flag suppresses all output except errors. The `--dry-run` flag on write commands prints the request body without calling the API.
-
----
-
-### Live Log Streaming
-
-`dbz pipeline logs --stream <id>` is the equivalent of `kubectl logs -f` for Debezium. The CLI connects to the Platform's WebSocket endpoint using a Quarkus WebSocket client and prints log lines to the terminal in real time.
-
-The WebSocket connection lifecycle is managed carefully: the CLI handles `SIGINT` (Ctrl+C) by closing the connection cleanly and reconnects automatically on unexpected drops with exponential backoff.
-
-```java
-@ClientWebSocket
-public class PipelineLogSocket {
-    @OnMessage
-    void onMessage(String logLine) {
-        System.out.println(logLine);
-    }
-    @OnClose
-    void onClose(CloseReason reason) {
-        // reconnect with exponential backoff
-    }
-}
-```
-
----
-
-### Output Formatting
-
-All read commands support three output modes via `--output`:
-
-- **Table (default):** Human-readable formatted table with column headers and coloured status indicators.
-- **JSON (`--output json`):** Raw Platform API response as JSON, for piping into `jq`.
-- **Plain (`--output plain`):** Space-separated values with no headers, for `awk`/`cut` in shell scripts.
-
-The output formatting logic is in a separate `io.debezium.cli.output` package, fully decoupled from command logic. Each command produces a typed result object; the formatter decides how to render it.
+When the Platform returns a 4xx or 5xx response, the CLI extracts the error body, formats it clearly, and exits with a non-zero exit code.
 
 ---
 
 ### Native Binary — GraalVM Compilation
 
-The final artifact is a **native binary** compiled via GraalVM `native-image`. The user installs a single `dbz` file with no JVM or JAVA_HOME required. Startup time is under 50ms.
-
-All classes that are instantiated reflectively at runtime (Jackson deserialization types, Picocli command classes, config parsers) are registered via `@RegisterForReflection` annotations and a `reflection-config.json` resource to satisfy GraalVM's closed-world analysis.
+The final artifact is a **native binary** compiled via GraalVM `native-image`. All classes instantiated reflectively at runtime (Jackson deserialization types, Picocli command classes, config parsers) are registered via `@RegisterForReflection` and Quarkus's native image configuration. Optional compression dependencies (Apache Commons Compress, brotli, zstd-jni, xz) and Apache HttpClient static initializers required specific GraalVM substitutions to support native compilation.
 
 ---
 
@@ -386,66 +344,64 @@ All classes that are instantiated reflectively at runtime (Jackson deserializati
 
 | Resource | Endpoints |
 |---|---|
-| Pipelines | list, get, create, update, delete, logs (download), logs (stream), signal |
+| Pipelines | list, get, create, update, delete, logs, signal |
 | Sources | list, get, create, update, delete, verify-signals |
 | Destinations | list, get, create, update, delete |
 | Connections | list, get, create, update, delete, validate, schemas, collections |
 | Transforms | list, get, create, update, delete |
 | Catalog | list, list (by type), get by type+class |
-| WebSocket | Live log stream (`/api/pipelines/{id}/logs/stream`) |
 
 ---
 
-### Implementation Steps
+### Implementation Steps (Completed during GSoC 2026)
 
-1. Create `debezium-cli` Maven module with Quarkus + Picocli dependencies inside `debezium/debezium`
-2. Implement base commands: `dbz`, `dbz version`, `dbz help`, `dbz config set/get`
-3. Implement `dbz init` with Qute templates per connector
-4. Implement `dbz validate` (schema + semantic validation)
-5. Implement `dbz build` with embedded Maven Resolver API and connector manifest
-6. Implement `dbz build --image` with Jib integration
-7. Implement `dbz push` with Docker credential store resolution
-8. Generate typed REST client from Platform OpenAPI spec
-9. Implement all Platform Subsystem read commands (`pipeline list/get`, `source list/get`, etc.)
-10. Implement all Platform Subsystem write commands (create, update, delete, signal)
-11. Implement `dbz pipeline logs --stream` via Quarkus WebSocket client
-12. Implement `dbz catalog list/get`
-13. Add `--quiet`, `--dry-run`, and `--output` global flags
-14. Configure GraalVM reflection hints and build native binary
-15. Add shell completion generation (Picocli built-in: bash/zsh/fish)
-16. Set up GitHub Actions CI (build, test, native binary)
+1. Pipeline management commands — list, get, create, update, delete ([PR #13](https://github.com/debezium/jbang-catalog/pull/13))
+2. Source and destination management commands ([PR #14](https://github.com/debezium/jbang-catalog/pull/14))
+3. Connection and transform management commands ([PR #16](https://github.com/debezium/jbang-catalog/pull/16))
+4. Catalog commands and pipeline logs ([PR #18](https://github.com/debezium/jbang-catalog/pull/18))
+5. Multi-environment switching, config management, pipeline signal, source verify-signals, version command ([PR #19](https://github.com/debezium/jbang-catalog/pull/19))
+6. `debezium init` and `debezium validate` commands ([PR #20](https://github.com/debezium/jbang-catalog/pull/20))
+7. Catalog API validation and inventory module refactor ([PR #21](https://github.com/debezium/jbang-catalog/pull/21))
+8. `debezium build` command with `DistributionResolver` and Jib Core ([PR #22](https://github.com/debezium/jbang-catalog/pull/22))
+9. Network integration tests for build command ([PR #23](https://github.com/debezium/jbang-catalog/pull/23))
+10. Fix init templates to use correct default version ([PR #24](https://github.com/debezium/jbang-catalog/pull/24))
+11. Build command v2: sources jar extraction, configurable Maven Central URL, `~/.dbz` auto-init ([PR #25](https://github.com/debezium/jbang-catalog/pull/25))
 
 ## Testing
 
-The CLI will have a three-layer test suite:
+The CLI has a three-layer test suite:
 
-- **Unit tests (JUnit 5):** Config parsing, connector manifest lookup, output formatting, and command argument validation in isolation.
+- **Unit tests (JUnit 5):** Config parsing, connector inventory lookup, output formatting, and command argument validation in isolation.
 - **Integration tests (Quarkus Test + WireMock):** All Platform Subsystem commands tested against a mocked Platform REST API. Verifies HTTP client, JSON serialization, error handling, and output formatting end-to-end without a live Platform instance.
-- **End-to-end tests:** Run against a real Debezium Platform instance started via Docker Compose in CI. Verifies the full `init → build → push → pipeline create → logs` flow. These run on PR merge only, not on every commit.
+- **Network integration tests:** Tests for the build command that download real POM and sources jar from Maven Central and verify the assembly process end-to-end.
 
 ## Rejected Alternatives
 
 | Decision | Chosen | Alternative | Why |
 |---|---|---|---|
-| Build artifact | Native binary via GraalVM | Fat JAR | No JVM required on user machine, instant startup, single distributable file |
-| Maven resolution | Embedded Maven Resolver API | Shell out to `mvn` | No Maven install needed; one binary, no prerequisites |
-| REST client | Typed interface against OpenAPI spec | Hand-written HTTP calls | Type-safe; compiler catches API mismatches immediately |
-| Image building | Jib | Docker CLI | No Docker daemon required; works in CI/CD environments without Docker |
+| Build artifact | Native binary via GraalVM | Fat JAR | No JVM required on user machine, fast startup, single distributable file |
+| Maven distribution assembly | ProcessBuilder spawning `mvn package` | Embedded Maven Resolver API | ProcessBuilder reuses the existing `custom-distribution` Maven profile in the official Debezium Server POM; the embedded Resolver API would require reimplementing the full assembly descriptor logic |
+| REST client | Typed Quarkus REST Client interfaces | Hand-written HTTP calls | Type-safe; compiler catches API mismatches immediately |
+| Image building | Jib Core | Docker CLI | No Docker daemon required; works in CI/CD environments without Docker |
 | Config format | YAML | TOML / JSON | Most familiar to Debezium users given existing `application.properties` conventions |
+| Repository | `debezium/jbang-catalog` | New module in `debezium/debezium` monorepo | The jbang-catalog repo already hosts JBang-based Debezium tooling; avoids touching the large monorepo CI during initial development |
 
 ## Future Work
 
-- `dbz doctor` — health check command that verifies Platform connectivity and registry access
-- Interactive TUI — terminal dashboard for pipeline overview
-- `dbz import` — import an existing Kafka Connect connector config into a pipeline
-- Plugin system — `dbz plugin add` for community connector manifests
-- Windows native binary via GraalVM
+- **`debezium push` ([dbz#2438](https://github.com/debezium/dbz/issues/2438))** — push the assembled OCI image to Docker Hub, GHCR, or a custom registry with credential resolution from `~/.docker/config.json`, environment variables, and `~/.dbz/config.yaml`
+- **Color-highlighted CLI output** — improve readability of validation errors and command output
+- **`debezium logs` and `debezium status`** — real-time pipeline log streaming and pipeline health monitoring
+- **`debezium scale`** — scaling connector instances via the platform API
+- **MCP integration** — exposing CLI commands as MCP tools for AI assistant workflows
+- **Broader connector inventory** — extending `connectors.yaml` to cover all supported Debezium connectors and sinks
+- **`debezium doctor`** — health check command that verifies Platform connectivity and build prerequisites
 
 ## References
 
+- [debezium/jbang-catalog](https://github.com/debezium/jbang-catalog) — CLI repository
 - [Debezium Platform Conductor (REST API source)](https://github.com/debezium/debezium-platform/tree/main/debezium-platform-conductor)
 - [Debezium Server](https://github.com/debezium/debezium/tree/main/debezium-server)
 - [Quarkus CLI + Picocli Guide](https://quarkus.io/guides/picocli)
-- [Maven Resolver API](https://maven.apache.org/resolver/)
-- [Jib — containerization without Docker](https://github.com/GoogleContainerTools/jib)
+- [Jib Core — containerization without Docker](https://github.com/GoogleContainerTools/jib)
 - [GitHub Issue #40 — Debezium CLI](https://github.com/debezium/debezium-design-documents/issues/40)
+- [Parent tracker: debezium/dbz#2061](https://github.com/debezium/dbz/issues/2061)
