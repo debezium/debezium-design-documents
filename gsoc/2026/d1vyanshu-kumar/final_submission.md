@@ -14,6 +14,8 @@ The implementation adds a new `HostEnvironmentController` selected at startup vi
 
 ### High-Level Architecture
 
+![Host-Based Pipeline Deployment Architecture](architecture_diagram.png)
+
 ```mermaid
 flowchart TD
     SSH["~/.ssh/config\n(SSH Config File)"]
@@ -139,12 +141,12 @@ Implemented the automated host provisioning service that prepares remote target 
 
 Implemented pipeline deployment scheduling, container lifecycle orchestration, mapper serialization, and status polling.
 
-- **Concurrency-Safe Scheduling (`HostDeploymentService`)**: Uses `PESSIMISTIC_WRITE` locks on all READY hosts (sorted by ID to prevent deadlocks) before evaluating host load or allocating ports (`MAX(serverPort) + 1` from base 9000). Locks are held strictly during selection and released via `@Transactional(REQUIRES_NEW)` before HTTP calls.
-- **Domain Boundary Refactoring**: Replaced entity leaks across service boundaries with clean domain records (`HostAllocation`, `DeploymentRequest`) and Blaze-Persistence view models (`HostDeployment`).
-- **Container Runtime & Log Extraction**: Created `HostContainerRuntime` interface and `HostDockerContainerRuntime` implementation, and extracted container log streaming into `HostDockerLogReader`.
-- **Ansible Command Pattern**: Structured container operations in `AnsibleCommandRunner` using self-documenting `DeployStep` objects.
-- **Status Polling & Fault Tolerance (`HostDeploymentStatusPoller`)**: Queries the Host Agent REST client (`GET /api/agent/status/{name}`) to verify container health and config hash in a single call. Uses a consecutive-failure retry threshold to prevent transient network glitches from marking healthy pipelines as `FAILED`.
-- **Synchronized Deletion & Flyway Migration**: `HostPipelineController` synchronizes container undeployment before pipeline record removal. Flyway migration `V3.7.0.3__add_deployed_at.sql` drops the database-level FK constraint so the host service manages deployment cleanup independently without database-level blocking.
+- **Concurrency-Safe Scheduling (`HostDeploymentService`)**: Uses `PESSIMISTIC_WRITE` locks on all `READY` hosts (sorted by ID to prevent deadlocks) before evaluating host load or allocating ports (`MAX(serverPort) + 1` from base 9000). Locks are held strictly during selection and released via `@Transactional(REQUIRES_NEW)` before container runtime execution.
+- **Domain Boundary Refactoring**: Replaced JPA entity leaks across service boundaries with clean domain records (`HostAllocation`, `DeploymentRequest`) and Blaze-Persistence view models (`HostDeployment`).
+- **Container Runtime & Log Extraction**: Defined the `HostContainerRuntime` interface implemented by `AnsibleContainerRuntime`, decoupling `HostPipelineController` from direct process execution. Extracted container log streaming into `HostDockerLogReader`, implementing the platform `LogReader` interface.
+- **Ansible Command Pattern**: Encapsulated Ansible ad-hoc execution in `AnsibleCommandRunner` using the Command pattern (`ShellCommand`, `CopyCommand`, `FileCommand` implementing `AnsibleCommand`).
+- **Status Polling & Transient Fault Tolerance (`HostDeploymentStatusPoller`)**: Periodically inspects active deployments via Ansible ad-hoc `docker inspect` commands, wrapped with `RetryingRunnable` exponential backoff to prevent transient SSH timeouts from falsely marking pipelines as `FAILED`. Performs SHA-256 hash checks to detect remote configuration drift (`CONFIG_DRIFT`).
+- **Synchronized Deletion & Flyway Migration**: `HostPipelineController` synchronizes container undeployment before pipeline record removal. Flyway migration `V3.7.0.3__add_deployed_at.sql` adds `deployed_at` and drops the database-level FK constraint so the host service manages deployment cleanup independently without database-level blocking.
 
 - **Issue:** [debezium/dbz#2101](https://github.com/debezium/dbz/issues/2101)
 - **PR [#493](https://github.com/debezium/debezium-platform/pull/493)** (merged)
@@ -164,6 +166,18 @@ Implementing the Host Agent: a lightweight Quarkus-based HTTP server deployed on
 
 ---
 
+### Additional Stability Fix: Atomic SSH Config Writes in Integration Tests (DBZ-2509)
+
+Resolved a race condition in `SshConfigWatcherServiceIT` causing intermittent integration test failures on loaded CI environments ([debezium/debezium#7848](https://github.com/debezium/debezium/issues/7848)).
+
+- **Root Cause**: Integration tests modified the monitored SSH config file using `Files.writeString()`, which non-atomically truncates the target file before writing updated content. On heavily loaded CI runners, the background `WatchService` watcher thread occasionally executed during this truncate-then-write window, causing `SshConfigParser` to read an empty file and incorrectly mark active host entities as `REMOVED`.
+- **Atomic Write Helper**: Extracted `writeConfigAtomically()` in `SshConfigWatcherServiceIT`, writing content to a temporary file on the same filesystem before executing `Files.move(..., StandardCopyOption.ATOMIC_MOVE)`. This guarantees concurrent file system watchers always observe a fully written config file.
+
+- **Issue:** [debezium/dbz#2509](https://github.com/debezium/dbz/issues/2509)
+- **PR [#518](https://github.com/debezium/debezium-platform/pull/518)** (merged)
+
+---
+
 ### Worklog
 
 **Parent Tracker Issue:** [debezium/dbz#2085](https://github.com/debezium/dbz/issues/2085)
@@ -178,6 +192,8 @@ Implementing the Host Agent: a lightweight Quarkus-based HTTP server deployed on
 | 8-9 | Jul 13 - Jul 26 | `HostProvisioningService`, dedicated executor pool, Ansible playbook, provisioning state machine | [dbz#2092](https://github.com/debezium/dbz/issues/2092), [PR #466](https://github.com/debezium/debezium-platform/pull/466) |
 | 10-13 | Jul 27 - Aug 24 | `HostDeploymentService` (PESSIMISTIC_WRITE scheduling), `HostPipelineMapper`, `HostPipelineController`, `HostDeploymentStatusPoller`, `HostAgentApi`, `HostAgentClient`, consecutive-failure threshold, migration fixes | [dbz#2101](https://github.com/debezium/dbz/issues/2101), [PR #493](https://github.com/debezium/debezium-platform/pull/493) |
 | 14+ | Aug 25 - present | Host Agent submodule (`debezium-platform-host-agent`), all Agent endpoints, bearer token auth, `systemd` integration | [dbz#2094](https://github.com/debezium/dbz/issues/2094) (PR in progress) |
+| Post-GSoC | Aug 26 - Aug 28 | Fix flaky `SshConfigWatcherServiceIT` with atomic file writes | [dbz#2509](https://github.com/debezium/dbz/issues/2509), [PR #518](https://github.com/debezium/debezium-platform/pull/518) |
+
 
 ---
 
