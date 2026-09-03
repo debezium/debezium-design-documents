@@ -375,6 +375,16 @@ For incremental snapshots, per table chunk progress may not be available (it dep
 - Rows scanned counter updates as notifications arrive.
 - Global progress (tables completed out of total) still works regardless.
 
+#### How we intend to fill the gap
+
+To turn the incremental per table view from a counter into a real progress bar, the connector needs a per table total row count at snapshot start (initial snapshots already report chunk totals). That count is resolved by an automatic strategy with no configuration, chosen so we pay the expensive path only when we have to:
+
+1. If the snapshot has no additional filter condition and the database exposes a cheap row count estimate (for example Postgres `pg_class.reltuples` or the InnoDB row estimate), use that estimate. It is a constant time metadata read regardless of table size.
+2. Otherwise (a filter is present, or the database has no estimate source), run an exact count bounded to the rows the snapshot will actually scan, that is `count of rows with primary key up to the snapshot maximum key`, applying the same filter when one exists.
+3. If the count query fails for any reason, resolve to no count. The view then stays in the spinner plus counter mode described above.
+
+The bound on the primary key keeps the total on the same basis as the rows the snapshot really reads, so the bar cannot exceed 100 percent when new rows arrive during the snapshot. Because estimates can be slightly stale, the total is treated as best effort: the frontend clamps the bar and keeps the rows scanned counter accurate. From the frontend point of view nothing changes when this lands, the per table `progress` field simply starts being populated and the bar replaces the spinner.
+
 ## Snapshot Lifecycle and States
 
 The platform maps raw Debezium notifications into a simplified lifecycle. Both snapshot types share this model.
