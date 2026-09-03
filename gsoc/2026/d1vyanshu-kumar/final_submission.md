@@ -12,6 +12,44 @@ The [Debezium Platform](https://github.com/debezium/debezium-platform) currently
 
 The implementation adds a new `HostEnvironmentController` selected at startup via a global deployment mode property (`platform.deployment.mode=host`), using Quarkus `@LookupIfProperty` CDI bean selection so the same compiled image supports both modes. Hosts are discovered automatically from a standard OpenSSH `~/.ssh/config` file, watched for changes via a Java NIO `WatchService`, and provisioned idempotently using an Ansible playbook that installs a container engine and a lightweight Host Agent on each remote machine. Pipeline scheduling is handled by a concurrency-safe round-robin strategy using `PESSIMISTIC_WRITE` locking. The Host Agent, a small Quarkus HTTP server deployed as a `systemd` service, translates REST calls from the Conductor into native container runtime management commands, achieving full pipeline lifecycle parity with the Kubernetes path (deploy, undeploy, stop, start, and log streaming). A background status poller with SHA-256 config drift detection continuously monitors all active deployments. Six of the seven planned sub-issues have been merged to the upstream repository, with the seventh (Host Agent submodule) in active development.
 
+### High-Level Architecture
+
+```mermaid
+flowchart TD
+    SSH["~/.ssh/config\n(SSH Config File)"]
+    USER["User Pipeline Deploy Request\n(Debezium Platform REST API)"]
+
+    subgraph CONDUCTOR["Debezium Platform Conductor"]
+        WATCHER["SshConfigWatcherService\nNIO WatchService\n+ @Scheduled 5min fallback"]
+        PROVISIONER["AnsibleHostProvisioner\n4-thread ExecutorService\nProcessBuilder"]
+        DB[("PostgreSQL\nHostStatusEntity\nHostDeploymentEntity")]
+        SCHEDULER["HostDeploymentService\nPESSIMISTIC_WRITE lock on all READY hosts\nSelects least-loaded host + allocates port"]
+        MAPPER["HostPipelineMapper\nGenerates application.properties\nComputes SHA-256 config hash"]
+        CLIENT["HostAgentClient\nREST Client with Bearer Token"]
+        POLLER["HostDeploymentStatusPoller\n@Scheduled every 30s\nChecks health + config hash"]
+    end
+
+    subgraph REMOTE["Remote Host (Bare-Metal / Cloud VM)"]
+        AGENT["Host Agent Daemon\nQuarkus HTTP :8090\nDeployed as systemd service"]
+        SERVER["Debezium Server\nRunning as Container\napplication.properties"]
+    end
+
+    SSH --> WATCHER
+    WATCHER --> DB
+    WATCHER -->|"new host detected"| PROVISIONER
+    PROVISIONER -->|"ansible-playbook host-setup.yml via SSH"| AGENT
+
+    USER --> SCHEDULER
+    SCHEDULER --> DB
+    SCHEDULER --> MAPPER
+    MAPPER --> CLIENT
+    CLIENT -->|"POST /api/agent/deploy\nAuthorization: Bearer token"| AGENT
+    AGENT -->|"container run"| SERVER
+
+    POLLER -->|"GET /api/agent/status/{name}\nreturns running + SHA-256 hash"| AGENT
+    POLLER --> DB
+```
+
 ---
 
 ## Code and Artifacts
@@ -103,9 +141,9 @@ Implemented pipeline deployment scheduling, container lifecycle orchestration, m
 
 - **Concurrency-Safe Scheduling (`HostDeploymentService`)**: Uses `PESSIMISTIC_WRITE` locks on all READY hosts (sorted by ID to prevent deadlocks) before evaluating host load or allocating ports (`MAX(serverPort) + 1` from base 9000). Locks are held strictly during selection and released via `@Transactional(REQUIRES_NEW)` before HTTP calls.
 - **Domain Boundary Refactoring**: Replaced entity leaks across service boundaries with clean domain records (`HostAllocation`, `DeploymentRequest`) and Blaze-Persistence view models (`HostDeployment`).
-- **Container Runtime Abstraction**: Created `HostContainerRuntime` interface and `HostDockerContainerRuntime` implementation, and extracted container log streaming into `HostDockerLogReader`.
+- **Container Runtime & Log Extraction**: Created `HostContainerRuntime` interface and `HostDockerContainerRuntime` implementation, and extracted container log streaming into `HostDockerLogReader`.
 - **Ansible Command Pattern**: Structured container operations in `AnsibleCommandRunner` using self-documenting `DeployStep` objects.
-- **Transient Fault Tolerance (`HostDeploymentStatusPoller`)**: Added a consecutive-failure retry threshold to the 30-second status poller to prevent transient network glitches from marking healthy pipelines as `FAILED`.
+- **Status Polling & Fault Tolerance (`HostDeploymentStatusPoller`)**: Queries the Host Agent REST client (`GET /api/agent/status/{name}`) to verify container health and config hash in a single call. Uses a consecutive-failure retry threshold to prevent transient network glitches from marking healthy pipelines as `FAILED`.
 - **Synchronized Deletion & Flyway Migration**: `HostPipelineController` synchronizes container undeployment before pipeline record removal. Flyway migration `V3.7.0.3__add_deployed_at.sql` drops the database-level FK constraint so the host service manages deployment cleanup independently without database-level blocking.
 
 - **Issue:** [debezium/dbz#2101](https://github.com/debezium/dbz/issues/2101)
@@ -157,6 +195,7 @@ Implementing the Host Agent: a lightweight Quarkus-based HTTP server deployed on
 
 ### Short-Term Technical Roadmap
 - **Complete Host Agent Sub-Issue ([dbz#2094](https://github.com/debezium/dbz/issues/2094))**: Finalize the `debezium-platform-host-agent` Maven submodule, complete end-to-end testing of bearer token authentication and systemd daemon integration, and merge the PR.
+- **Feature Documentation & User Guides**: Author comprehensive end-user and administrator documentation for host-based pipeline deployment in the official Debezium documentation repository, covering SSH config volume mounts, mode selection (`platform.deployment.mode=host`), security considerations, and operational troubleshooting.
 - **Dedicated Agent Health Endpoint (`GET /api/agent/health`)**: Add an explicit health probe endpoint so the `HostDeploymentStatusPoller` can reliably differentiate between an idle, healthy remote host and a network partition, reducing false-positive `FAILED` status transitions.
 - **Label & Tag-Based Host Scheduling**: Extend the `DeployStrategy` interface beyond round-robin load distribution to support metadata tag matching (such as matching pipelines to hosts tagged with `env=prod` or `region=us-east`), catering to enterprise topology constraints.
 - **Graceful Host Drain Workflows**: Implement a graceful migration phase when a host is removed from `~/.ssh/config`, automatically stopping containers and re-scheduling pipelines onto remaining healthy hosts before transitioning the host entity to `REMOVED`.
