@@ -8,7 +8,7 @@ Once a snapshot starts there is no visibility into its progress. Users cannot te
 
 A snapshot of a large database can run for a long time. During that window downstream consumers are waiting for a complete backfill, and the operator has no way to set expectations or to notice that a single large table (or a permission error on one table) is holding everything up.
 
-This document proposes a snapshot monitoring feature that turns the raw progress signals Debezium already emits into a clear, real time view in the UI: a global progress bar, a per table breakdown, rows scanned counters, and a history of completed runs.
+This document proposes a snapshot monitoring feature that turns the raw progress signals Debezium already emits into a clear, real time view in the UI: a compact Snapshot column on the pipeline listing page, a global progress bar, a per table breakdown, rows scanned counters, and a history of completed runs.
 
 ## Goals
 
@@ -20,6 +20,7 @@ Primary objectives:
 4. Persist completed snapshot runs as history so operators can review past durations, outcomes, and per table results.
 5. Push updates to the UI as they happen (no polling) while keeping the client simple.
 6. Survive restarts of both the Debezium Server and the Conductor without losing progress state.
+7. Surface active snapshot progress on the pipeline listing page so operators can scan many pipelines without opening each one.
 
 Non goals for this phase:
 
@@ -60,7 +61,7 @@ flowchart TB
     end
 
     subgraph FE[Stage React SPA]
-        UI[Overview card + Snapshots tab]
+        UI[Listing column, Overview card, Snapshots tab]
     end
 
     CH -->|HTTP POST notification| RCV
@@ -78,7 +79,7 @@ Flow in words:
 
 - **Debezium Server side:** only the HTTP notification channel, which ships in debezium-core. The platform enables it and injects the callback URL when creating the connector. There is nothing to build or mount.
 - **Conductor side:** the receiver, the aggregator, the persistence services, the scheduled cleanup and watchdog jobs, and the SSE + REST endpoints.
-- **Frontend side:** the Overview compact card and the dedicated Snapshots tab, described below.
+- **Frontend side:** the listing page Snapshot column, the Overview compact card, and the dedicated Snapshots tab, described below.
 
 ### Security note (relevant to deployment, not to the frontend)
 
@@ -96,7 +97,7 @@ This section is intentionally light and focuses on responsibilities rather than 
 
 ## API Reference
 
-All endpoints are under the `/api` prefix and are scoped to a single pipeline by `{pipelineId}` (the platform pipeline id, a number).
+All snapshot detail endpoints are under the `/api` prefix and are scoped to a single pipeline by `{pipelineId}` (the platform pipeline id, a number). The existing pipeline list endpoint is the one exception: it embeds a compact snapshot summary on each item (see endpoint 5).
 
 ### 1. Live progress stream (SSE)
 
@@ -229,7 +230,7 @@ In the list response the `tables` array is empty or omitted; it is populated onl
 
 ## Frontend / UI Requirements
 
-The feature appears in two places on the pipeline detail page.
+The feature appears on the pipeline listing page and in two places on the pipeline detail page.
 
 ### A. Overview tab: compact progress card
 
@@ -352,13 +353,90 @@ Clicking a history row expands it to show the per table breakdown of that run:
 - Below it, the history table (from the history list endpoint) with columns: type, outcome, tables (completed/total), rows, duration, and date. Sorted most recent first.
 - Clicking a history row expands it to show the per table breakdown, fetched from the history detail endpoint.
 
-### C. State handling summary
+### C. Pipeline listing page: Snapshot column
+
+Operators need to see at a glance which pipelines have an active snapshot without opening each one. Snapshots can run for a long time, and the listing is where operators scan many pipelines.
+
+**Column visibility:**
+
+- Insert the Snapshot column (between Destination and Status) when **at least one** pipeline on the current page has `snapshot` set.
+- Hide it again when none do, so an idle list does not grow an empty column.
+
+
+**Idle list (no active snapshots):**
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ Name              │ Source        │ Destination   │ Status   │      Actions │
+├───────────────────┼───────────────┼───────────────┼──────────┼──────────────┤
+│ test-pipeline     │ postgres-src  │ kafka-dest    │ Failed   │ Restart   ⋮ │
+│ idle-pipeline     │ postgres-src  │ kafka-dest    │ Running  │ Restart   ⋮ │
+└───────────────────┴───────────────┴───────────────┴──────────┴──────────────┘
+```
+
+**List with at least one active snapshot:**
+
+```
+┌──────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Name               │ Source        │ Destination  │ Snapshot                  │ Status  │   Actions │
+├────────────────────┼───────────────┼──────────────┼───────────────────────────┼─────────┼───────────┤
+│ inventory-pipeline │ postgres-src  │ kafka-dest   │ Initial ████████░░ 42%    │ Running │ Restart ⋮ │
+│ orders-pipeline    │ mysql-src     │ s3-dest      │ Incremental ██████░░ 30%  │ Running │ Restart ⋮ │
+│ legacy-pipeline    │ oracle-src    │ kafka-dest   │ Initial ░░░░░░░░░░        │ Running │ Restart ⋮ │
+│ idle-pipeline      │ postgres-src  │ kafka-dest   │ —                         │ Failed  │ Restart ⋮ │
+└────────────────────┴───────────────┴──────────────┴───────────────────────────┴─────────┴───────────┘
+```
+
+
+**Snapshot cell:**
+
+- `Flex` row, `flexWrap: nowrap`. Type text first (`Initial` / `Incremental`), then a compact bar. The cell stays on one line.
+- PatternFly `Progress` `size="sm"` with `measureLocation="inside"` so the percent lives in the bar. 
+- `isPaused` when `status` is `PAUSED` (static bar, no animation).
+- `isIndeterminate` when `percentage` is `null` (FR-C1 gap: total table count not known yet). No 0%.
+- Idle row while the column is visible: an em dash (`—`), not a zero-width bar.
+- Percentage is rounded to the nearest integer on this page (detail views may show one decimal).
+
+**Interaction:**
+
+- The pipeline **name** link stays as today (`/pipeline/{id}/overview`).
+- Clicking the Snapshot cell (type or bar) navigates to `/pipeline/{id}/snapshots`. 
+- Tooltip on the bar: "View snapshot progress".
+
+**Data source (list poll only):**
+
+The listing page keeps using its normal `GET /api/pipelines` poll/refresh.
+
+```json
+{
+  "id": 7,
+  "name": "inventory-pipeline",
+  "status": "RUNNING",
+  "snapshot": {
+    "type": "INITIAL",
+    "status": "RUNNING",
+    "percentage": 42
+  }
+}
+```
+
+When no snapshot is active, omit `snapshot` or set it to `null`. The shape intentionally excludes `tables[]` and other detail fields so the list payload stays small.
+
+```ts
+snapshot: null | {
+  type: "INITIAL" | "INCREMENTAL";
+  status: "RUNNING" | "PAUSED";
+  percentage: number | null;
+}
+```
+
+### D. State handling summary
 
 | Top level `status` | Meaning | UI behavior |
 |--------------------|---------|-------------|
-| `IDLE` | No snapshot running | Hide the Overview card; show "No active snapshot" plus history in the tab |
-| `RUNNING` | Actively scanning tables | Animated progress bar and table list |
-| `PAUSED` | Incremental snapshot paused | Static bar, "Paused" badge |
+| `IDLE` | No snapshot running | Hide the Overview card; show "No active snapshot" plus history in the tab; listing Snapshot cell is `—` (hide the column if every pipeline is idle) |
+| `RUNNING` | Actively scanning tables | Animated progress bar and table list; listing shows type + bar |
+| `PAUSED` | Incremental snapshot paused | Static bar, "Paused" badge; listing show paused progress bar |
 | `COMPLETED` / `ABORTED` / `SKIPPED` / `UNKNOWN` | Terminal | The run moves to history; the live view returns to IDLE |
 
 The frontend does not need to interpret raw Debezium notifications or track transitions. It renders the latest full state and, for history, reads the REST endpoints.
