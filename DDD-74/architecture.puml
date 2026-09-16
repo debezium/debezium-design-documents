@@ -1,0 +1,36 @@
+@startuml
+skinparam rectangle {
+  RoundCorner 10
+}
+
+database "Neo4j" as NEO4J
+rectangle "Neo4j Source Connector\n(CDC strategy)" as NEOSRC
+queue "Kafka\nTopics" as KAFKA
+rectangle "Neo4j Debezium Converter SMT" as SMT #LightBlue
+rectangle "Debezium JDBC\nSink Connector" as SINK
+database "Relational DB\n(PostgreSQL, MySQL, ...)" as DB
+
+NEO4J -right-> NEOSRC : node and\nrelationship\nchanges
+NEOSRC -right-> KAFKA : Neo4j CDC events
+KAFKA -right-> SMT
+SMT -right-> SINK : Debezium envelope\n(output topic =\ntarget table)
+SINK -right-> DB : INSERT / UPDATE / DELETE
+
+note bottom of SMT
+  Runs on the Debezium JDBC
+  sink connector.
+end note
+
+note bottom of NEOSRC
+  V1 requires:
+  source-strategy=CDC
+  payload.mode=EXTENDED
+end note
+
+note bottom of NEO4J
+  V1 requires
+  key/uniqueness
+  constraints
+end note
+
+@enduml
