@@ -31,7 +31,7 @@ The design responds to the request for cross-connector alignment in Debezium 4 w
 3. Use the existing `<topic.prefix>` schema topic and no-argument naming SPI.
 4. Publish `invalidate` with the native metadata/lifecycle events when publication is enabled, and handle it internally regardless of publication.
 
-The draft also proposes a 4.0 publication default of `true` and null namespace fields for eligible public events that lack a namespace. Their rationale appears below. The exact encoding and the server subscription/offset transition policy remain review questions.
+The draft also proposes a 4.0 publication default of `true` and null namespace fields for eligible public events that lack a namespace. Their rationale appears below. The string-valued `ddl` is the current baseline; whether to expose a structured object, the exact encoding, and the server subscription/offset transition policy remain review questions.
 
 ## Goals
 
@@ -80,9 +80,24 @@ The baseline is Debezium 3.6 documentation and source commit `bed6b9ace58e65751b
 | `ddl` | Complete received metadata event serialized as Extended JSON |
 | `tableChanges` | Empty array |
 
-`ddl` retains its Connect string type. The serialized document includes the native `operationType`, resume token, timestamps, operation details, and additional fields available after supported server-side pipeline processing. Internal mapping must not lose unknown fields through a typed driver representation. Fields removed by a user pipeline cannot be reconstructed. [Field types][db-schema-factory], [Common timestamps][db-schema-event]
+Under the current proposal, `ddl` retains its Connect string type. A JSON object representation is an [open question](#open-questions), separate from choosing the string's encoding. The serialized document includes the native `operationType`, the complete resume token (including `_typeBits` when present), timestamps, operation details, and additional fields available after supported server-side pipeline processing. Internal mapping must not lose unknown fields through a typed driver representation. Fields removed by a user pipeline cannot be reconstructed. [Field types][db-schema-factory], [Common timestamps][db-schema-event]
 
 Examples use Canonical Extended JSON v2 to preserve BSON type distinctions. Fixing that encoding or following `json.serialization.mode` remains open. Preservation is semantic, not byte-for-byte BSON identity, and must be tested against the format's limits. MongoDB's own connector distinguishes its type-preserving Extended JSON formatter from its legacy strict default. [Extended JSON v2][mongo-ejson], [Vendor formatters][vendor-formatters]
+
+The following metadata was observed in the MongoDB 8.0.21 captures described under [Testing](#testing). These are representative fields, not a projection or a required-field list. The complete received event is preserved; field availability depends on the operation, options, and server version.
+
+| Native operation | Metadata observed | Example |
+| --- | --- | --- |
+| `create` | `operationDescription.validator`, `operationDescription.idIndex`, `nsType` | Collection options and initial `_id` index |
+| `modify` | New validator or index options; previous options in `stateBeforeChange` | [Validator](#validator-modification), [TTL and hidden indexes](#index-option-modification) |
+| `createIndexes`, `dropIndexes` | `operationDescription.indexes[]` with index definitions | [Index creation and deletion](#index-creation-and-deletion) |
+| `rename` | Source `ns`, destination in both `to` and `operationDescription.to` | [Collection rename](#collection-rename) |
+| `drop` | Collection `ns` and `collectionUUID` | Collection removal |
+| `dropDatabase` | `ns.db`, without `ns.coll` or `collectionUUID` | [Database drop](#database-drop) |
+| `shardCollection` | `shardKey`, `unique`, `presplitHashedZones`, `capped` in `operationDescription` | [Sharding metadata](#sharding-metadata) |
+| `refineCollectionShardKey` | `operationDescription.oldShardKey` and `shardKey` | [Sharding metadata](#sharding-metadata) |
+| `reshardCollection` | Old/new shard keys, `reshardUUID`, `unique`, `numInitialChunks` | [Sharding metadata](#sharding-metadata) |
+| `invalidate` | Resume token and timestamps, without `ns` | [Stream invalidation](#stream-invalidation) |
 
 #### Event taxonomy and initial scope
 
@@ -182,7 +197,7 @@ Setting `include.schema.changes=false` before starting 4.0 will retain public CR
 
 ### Implementation work items
 
-1. Resolve encoding and server subscription/legacy-offset policy.
+1. Resolve string versus object representation, encoding, and server subscription/legacy-offset policy.
 2. Integrate the MongoDB nullable metadata schemas with the common event factory and dispatcher.
 3. Implement Extended JSON emission, event classification, filters, and reuse of the existing topic strategy.
 4. Integrate invalidation recovery and verify the commit invariants, including paths without public records.
@@ -202,7 +217,11 @@ The default change targets 4.0, not existing 3.x releases. New metadata consumer
 
 ## Testing
 
-This is a documentation and static-source design review; the following acceptance scenarios have not been executed.
+Native payload validation was performed on MongoDB 8.0.21 using PyMongo 4.18.1, a single-member replica set with FCV 8.0, and a sharded deployment with two single-member shard replica sets, a config replica set, and `mongos`. Database-scoped streams used an empty user pipeline and `showExpandedEvents=true`. The captures contain 18 metadata/lifecycle events covering all eleven operation names in the taxonomy, plus 100 seed inserts.
+
+For all 118 events, the captured BSON was compared with the parsed Canonical Extended JSON, preserving fields, values, and BSON type distinctions. The sharding sequence changed `{tenantId: 1}` to `{tenantId: 1, orderId: 1}` with `refineCollectionShardKey`, then to `{regionId: 1}` with `reshardCollection` and `numInitialChunks: 2`. All 100 documents retained their contents, and the final collection metadata contained the new shard key. The experiment used `periodicNoopIntervalSecs=1` and set the config server's `reshardingMinimumOperationDurationMillis=1000` to reduce waiting time.
+
+This validates the native examples and the Python Extended JSON round trip. The Debezium MongoDB source connector's proposed envelope, Java driver mapping, converters, and delivery/recovery behavior have not been implemented or exercised by this experiment. The following implementation acceptance scenarios remain to be executed.
 
 | Area | Evidence required |
 | --- | --- |
@@ -214,11 +233,19 @@ This is a documentation and static-source design review; the following acceptanc
 | Subscription | Compare expanded policies, both option-transition directions, user pipelines, legacy offsets, unsupported capability, and Stable API strict constraints |
 | Compatibility | Omitted setting equals true in 4.0; explicit false suppresses public metadata; existing converters, consumers, and custom strategies remain usable |
 
-Initial reproduction environments will be MongoDB 8.0 replica set and sharded deployments. This is not the product support minimum; the final version/patch/FCV matrix must match the target release. Sharded commands may produce multiple metadata events and need dedicated acceptance tests. [Server collMod tests][mongo-modify-test]
+The tested MongoDB version is not the product support minimum; the final version/patch/FCV matrix must match the target release. One event was observed for each sharding command in this experiment. Sharded commands may produce multiple metadata events in other cases and need dedicated acceptance tests. [Server collMod tests][mongo-modify-test]
 
 ## Alternatives Considered
 
-A separate `nativePayload` field could expose format and encoding explicitly but would extend the shared value schema. Reusing `ddl` preserves its field layout at the cost of connector-specific interpretation. Both can preserve the same serialized event.
+The payload representation remains open for review:
+
+| Representation | Benefit | Cost or requirement |
+| --- | --- | --- |
+| Extended JSON string in `ddl` (current baseline) | Reuses the existing field and Connect type | Consumers parse the string to inspect native fields |
+| Structured object in MongoDB `ddl` | Exposes native fields without parsing a nested JSON string | Changes the field's type contract; requires schema identity and compatibility decisions |
+| Structured object in a separate `nativePayload` field | Keeps the existing `ddl` type while exposing native fields directly | Extends the value schema and requires rules for how consumers choose between fields |
+
+Either object alternative needs an explicit Connect schema and converter mapping for heterogeneous, nested BSON values, preservation of additional native fields, and compatibility tests with existing schema-change consumers. Rendering a string's contents as a JSON object in an example does not resolve those requirements.
 
 Mapping every MongoDB event into `tableChanges` would require a new normalized model for validators, indexes, and sharding, while still needing native detail preservation. That is separate future work. Namespace, default, and subscription alternatives are compared at their decision points above.
 
@@ -226,47 +253,181 @@ Mapping every MongoDB event into `tableChanges` would require a new normalized m
 
 1. For MongoDB, could "schema change topic" suggest a history of document schema evolution that this proposal does not capture? It emits explicit metadata changes, including collection validator changes, and lifecycle events, without inferring schemas from document contents. Would "metadata change topic" be a clearer MongoDB-specific name while retaining the shared schema-change API and `<topic.prefix>` destination?
 2. Which factory/dispatcher extension will supply nullable MongoDB metadata key/source schemas without changing other record contracts?
-3. Should MongoDB `ddl` use fixed Canonical Extended JSON v2 or follow `json.serialization.mode`?
-4. When publication is false, should expanded capture be disabled or remain independent? Which legacy-offset and 4.0 upgrade transitions can be supported safely?
-5. Is streaming-only metadata sufficient initially, or is a synthetic snapshot baseline required?
+3. Should native MongoDB metadata remain an Extended JSON string in `ddl`, or be exposed as a structured JSON object? If an object is preferable, should MongoDB `ddl` change type, or should a separate field such as `nativePayload` be introduced? What Connect schema and converter mapping would preserve heterogeneous BSON values and additional native fields, and what changes would existing schema-change consumers require?
+4. If `ddl` remains string-valued, should it use fixed Canonical Extended JSON v2 or follow `json.serialization.mode`? This encoding choice is separate from the string-versus-object decision.
+5. When publication is false, should expanded capture be disabled or remain independent? Which legacy-offset and 4.0 upgrade transitions can be supported safely?
+6. Is streaming-only metadata sufficient initially, or is a synthetic snapshot baseline required?
 
 ## Record examples
 
-The examples below illustrate the proposed Connect key and value before converter-specific wrapping. They are synthetic design examples, not captured server output. Resume tokens are placeholders. `source` is abbreviated to fields relevant to the example. The production `ddl` string will contain every received event field. Examples use the proposed MongoDB default schema topic, `<topic.prefix>`. Database information remains in the event key and envelope.
+The native payloads below were captured from MongoDB 8.0.21 with database-scoped change streams and `showExpandedEvents=true`, as described under [Testing](#testing). Resume tokens, UUIDs, timestamps, and BSON type representations are retained from the captures. The surrounding Connect key/value records illustrate the proposed mapping; they were not emitted by Debezium. `source` is abbreviated, and `ts_ms` is an illustrative connector processing time.
+
+Under the current proposal, `ddl` is a Connect **string** containing the complete received event. The first example shows its escaped JSON string in the proposed envelope. Standalone JSON blocks show the **parsed contents of that string** for readability, with excerpts explicitly identified. They do not propose changing `ddl` to an object; that choice remains an [open question](#open-questions). Examples use topic `inventory` (`<topic.prefix>`), partition `0`.
 
 ### Validator modification
 
-Topic: `inventory`, partition: `0`.
+The collection was created with `required: ["orderId"]`. A subsequent `collMod` changed it to `required: ["orderId", "customerId"]`. The proposed record retains the complete captured event in `ddl`:
 
 ```json
 {
-  "key": { "databaseName": "app" },
+  "key": {"databaseName": "ddd73_replica"},
   "value": {
-    "source": { "connector": "mongodb", "name": "inventory", "db": "app", "collection": "orders" },
-    "ts_ms": 1789084800100,
-    "databaseName": "app",
+    "source": {"connector": "mongodb", "name": "inventory", "db": "ddd73_replica", "collection": "orders"},
+    "ts_ms": 1789536870026,
+    "databaseName": "ddd73_replica",
     "schemaName": null,
-    "ddl": "{\"_id\":{\"_data\":\"TOKEN_MODIFY\"},\"operationType\":\"modify\",\"clusterTime\":{\"$timestamp\":{\"t\":1789084800,\"i\":1}},\"ns\":{\"db\":\"app\",\"coll\":\"orders\"},\"operationDescription\":{\"validator\":{\"$jsonSchema\":{\"bsonType\":\"object\",\"required\":[\"orderId\"]}}}}",
+    "ddl": "{\"_id\":{\"_data\":\"826AAA2A65000000022B042C0100296E5A1004ADB3EAFEEBCF423683BE8CF7CBC7F1D2463C6F7065726174696F6E54797065003C6D6F6469667900466F7065726174696F6E4465736372697074696F6E00464676616C696461746F72004646246A736F6E536368656D6100463C62736F6E54797065003C6F626A6563740050726571756972656400503C6F726465724964003C637573746F6D6572496400000000000004\"},\"operationType\":\"modify\",\"clusterTime\":{\"$timestamp\":{\"t\":1789536869,\"i\":2}},\"collectionUUID\":{\"$binary\":{\"base64\":\"rbPq/uvPQjaDvoz3y8fx0g==\",\"subType\":\"04\"}},\"wallTime\":{\"$date\":{\"$numberLong\":\"1789536869926\"}},\"ns\":{\"db\":\"ddd73_replica\",\"coll\":\"orders\"},\"operationDescription\":{\"validator\":{\"$jsonSchema\":{\"bsonType\":\"object\",\"required\":[\"orderId\",\"customerId\"]}}},\"stateBeforeChange\":{\"collectionOptions\":{\"uuid\":{\"$binary\":{\"base64\":\"rbPq/uvPQjaDvoz3y8fx0g==\",\"subType\":\"04\"}},\"validator\":{\"$jsonSchema\":{\"bsonType\":\"object\",\"required\":[\"orderId\"]}}}}}",
     "tableChanges": []
   }
 }
 ```
 
-The validator is declared collection metadata. Adding `orderId` to a single stored document would instead produce an ordinary data event. The source event can also contain prior collection options in `stateBeforeChange`; those fields will be retained when supplied. [MongoDB modify event][mongo-modify]
-
-### Collection rename
-
-Topic: `inventory`, partition: `0`. The source namespace determines the database in the key and envelope, even when the inclusion filter matches only the destination namespace.
+The following excerpt shows the new validator and the previous collection options after parsing `ddl`. Adding a field to one stored document would instead produce an ordinary data event. [MongoDB modify event][mongo-modify]
 
 ```json
 {
-  "key": { "databaseName": "app" },
+  "operationType": "modify",
+  "operationDescription": {"validator": {"$jsonSchema": {"bsonType": "object", "required": ["orderId", "customerId"]}}},
+  "stateBeforeChange": {
+    "collectionOptions": {
+      "uuid": {"$binary": {"base64": "rbPq/uvPQjaDvoz3y8fx0g==", "subType": "04"}},
+      "validator": {"$jsonSchema": {"bsonType": "object", "required": ["orderId"]}}
+    }
+  }
+}
+```
+
+### Index option modification
+
+A TTL index named `expiresAt_1` was created with `expireAfterSeconds: NumberLong(7200)`. The command `db.runCommand({collMod: "orders", index: {name: "expiresAt_1", expireAfterSeconds: NumberLong(3600)}})` produced this complete native event, shown as parsed Canonical Extended JSON:
+
+```json
+{
+  "_id": {
+    "_data": "826AAA2A6C000000012B042C0100296E5A1004ADB3EAFEEBCF423683BE8CF7CBC7F1D2463C6F7065726174696F6E54797065003C6D6F6469667900466F7065726174696F6E4465736372697074696F6E004646696E64657800463C6E616D65003C6578706972657341745F31001E65787069726541667465725365636F6E6473002C1C2000000004",
+    "_typeBits": {"$binary": {"base64": "ggAC", "subType": "00"}}
+  },
+  "operationType": "modify",
+  "clusterTime": {"$timestamp": {"t": 1789536876, "i": 1}},
+  "collectionUUID": {"$binary": {"base64": "rbPq/uvPQjaDvoz3y8fx0g==", "subType": "04"}},
+  "wallTime": {"$date": {"$numberLong": "1789536876025"}},
+  "ns": {"db": "ddd73_replica", "coll": "orders"},
+  "operationDescription": {"index": {"name": "expiresAt_1", "expireAfterSeconds": {"$numberLong": "3600"}}},
+  "stateBeforeChange": {
+    "collectionOptions": {
+      "uuid": {"$binary": {"base64": "rbPq/uvPQjaDvoz3y8fx0g==", "subType": "04"}},
+      "validator": {"$jsonSchema": {"bsonType": "object", "required": ["orderId", "customerId"]}},
+      "validationLevel": "strict",
+      "validationAction": "error"
+    },
+    "indexOptions": {"expireAfterSeconds": {"$numberLong": "7200"}}
+  }
+}
+```
+
+Both TTL values are BSON `int64`, represented by `$numberLong`. The resume token includes `_typeBits` as well as `_data`; the entire token must be retained. `stateBeforeChange.indexOptions` supplies the prior modified option in this capture, not a complete index definition.
+
+Hiding the `orderId_1` index with `collMod` also produced `modify`. This excerpt selects the changed option and its previous value; the event also contained collection options and common event fields:
+
+```json
+{
+  "operationType": "modify",
+  "operationDescription": {"index": {"name": "orderId_1", "hidden": true}},
+  "stateBeforeChange": {"indexOptions": {"hidden": false}}
+}
+```
+
+### Index creation and deletion
+
+Creating `{orderId: 1}` as `orderId_1` produced this excerpt. `indexes` is an array of index specifications:
+
+```json
+{
+  "operationType": "createIndexes",
+  "operationDescription": {
+    "indexes": [{"v": {"$numberInt": "2"}, "key": {"orderId": {"$numberInt": "1"}}, "name": "orderId_1"}]
+  }
+}
+```
+
+After the index was hidden, dropping it produced the following excerpt, including its `hidden` option:
+
+```json
+{
+  "operationType": "dropIndexes",
+  "operationDescription": {
+    "indexes": [
+      {
+        "v": {"$numberInt": "2"},
+        "key": {"orderId": {"$numberInt": "1"}},
+        "name": "orderId_1",
+        "hidden": true
+      }
+    ]
+  }
+}
+```
+
+### Sharding metadata
+
+These excerpts were captured through `mongos`. The collection contained 100 documents with `tenantId`, `orderId`, and `regionId`, and supporting indexes were created before the sharding commands. Each block selects `operationType` and `operationDescription`; the complete events also contained their resume tokens, timestamps, namespace, and collection UUID.
+
+`shardCollection` with `key: {tenantId: 1}` produced:
+
+```json
+{
+  "operationType": "shardCollection",
+  "operationDescription": {
+    "shardKey": {"tenantId": {"$numberInt": "1"}},
+    "unique": false,
+    "presplitHashedZones": false,
+    "capped": false
+  }
+}
+```
+
+`refineCollectionShardKey` with `key: {tenantId: 1, orderId: 1}` produced:
+
+```json
+{
+  "operationType": "refineCollectionShardKey",
+  "operationDescription": {
+    "shardKey": {"tenantId": {"$numberInt": "1"}, "orderId": {"$numberInt": "1"}},
+    "oldShardKey": {"tenantId": {"$numberInt": "1"}}
+  }
+}
+```
+
+`reshardCollection` with `key: {regionId: 1}` and `numInitialChunks: 2` produced:
+
+```json
+{
+  "operationType": "reshardCollection",
+  "operationDescription": {
+    "reshardUUID": {"$binary": {"base64": "qcRbVTfTSremL8Brgo5mSg==", "subType": "04"}},
+    "shardKey": {"regionId": {"$numberInt": "1"}},
+    "oldShardKey": {"tenantId": {"$numberInt": "1"}, "orderId": {"$numberInt": "1"}},
+    "unique": false,
+    "numInitialChunks": {"$numberLong": "2"}
+  }
+}
+```
+
+`numInitialChunks` is BSON `int64`; shard-key direction values are BSON `int32`. `reshardUUID` is binary subtype `04`. The reshard event also carried `_id._typeBits`. No `collation` or `zones` field was present for this command, which did not specify those options. These examples describe changes to the collection's shard key definition, not updates to an individual document's shard key value. Publishing this metadata does not itself re-key existing Kafka records or migrate sink data.
+
+### Collection rename
+
+Renaming `ddd73_replica.orders` to `ddd73_replica.orders_archive` preserved the collection UUID. The destination appeared both at the top-level `to` field and in `operationDescription.to`; the proposed mapping retains both. The source namespace determines the database in the key and envelope, even when the inclusion filter matches only the destination namespace.
+
+```json
+{
+  "key": {"databaseName": "ddd73_replica"},
   "value": {
-    "source": { "connector": "mongodb", "name": "inventory", "db": "app", "collection": "orders" },
-    "ts_ms": 1789084801100,
-    "databaseName": "app",
+    "source": {"connector": "mongodb", "name": "inventory", "db": "ddd73_replica", "collection": "orders"},
+    "ts_ms": 1789536882196,
+    "databaseName": "ddd73_replica",
     "schemaName": null,
-    "ddl": "{\"_id\":{\"_data\":\"TOKEN_RENAME\"},\"operationType\":\"rename\",\"ns\":{\"db\":\"app\",\"coll\":\"orders\"},\"to\":{\"db\":\"app\",\"coll\":\"archived_orders\"}}",
+    "ddl": "{\"to\":{\"db\":\"ddd73_replica\",\"coll\":\"orders_archive\"},\"_id\":{\"_data\":\"826AAA2A72000000012B042C0100296E5A1004ADB3EAFEEBCF423683BE8CF7CBC7F1D2463C6F7065726174696F6E54797065003C72656E616D6500466F7065726174696F6E4465736372697074696F6E004646746F00463C6462003C64646437335F7265706C696361003C636F6C6C003C6F72646572735F617263686976650000000004\"},\"operationType\":\"rename\",\"clusterTime\":{\"$timestamp\":{\"t\":1789536882,\"i\":1}},\"collectionUUID\":{\"$binary\":{\"base64\":\"rbPq/uvPQjaDvoz3y8fx0g==\",\"subType\":\"04\"}},\"wallTime\":{\"$date\":{\"$numberLong\":\"1789536882096\"}},\"ns\":{\"db\":\"ddd73_replica\",\"coll\":\"orders\"},\"operationDescription\":{\"to\":{\"db\":\"ddd73_replica\",\"coll\":\"orders_archive\"}}}",
     "tableChanges": []
   }
 }
@@ -274,17 +435,17 @@ Topic: `inventory`, partition: `0`. The source namespace determines the database
 
 ### Database drop
 
-Topic: `inventory`, partition: `0`. No collection name will be synthesized.
+The database-scoped stream observed `drop` for the remaining `audit` collection, followed by `dropDatabase` and `invalidate`. The `dropDatabase` event had only `ns.db`, with no collection UUID or collection name. No collection name is synthesized in the proposed record:
 
 ```json
 {
-  "key": { "databaseName": "app" },
+  "key": {"databaseName": "ddd73_replica"},
   "value": {
-    "source": { "connector": "mongodb", "name": "inventory", "db": "app", "collection": null },
-    "ts_ms": 1789084802100,
-    "databaseName": "app",
+    "source": {"connector": "mongodb", "name": "inventory", "db": "ddd73_replica", "collection": null},
+    "ts_ms": 1789536888318,
+    "databaseName": "ddd73_replica",
     "schemaName": null,
-    "ddl": "{\"_id\":{\"_data\":\"TOKEN_DROP_DATABASE\"},\"operationType\":\"dropDatabase\",\"ns\":{\"db\":\"app\"}}",
+    "ddl": "{\"_id\":{\"_data\":\"826AAA2A78000000022B042C0100296E14463C6F7065726174696F6E54797065003C64726F704461746162617365000004\"},\"operationType\":\"dropDatabase\",\"clusterTime\":{\"$timestamp\":{\"t\":1789536888,\"i\":2}},\"wallTime\":{\"$date\":{\"$numberLong\":\"1789536888218\"}},\"ns\":{\"db\":\"ddd73_replica\"}}",
     "tableChanges": []
   }
 }
@@ -292,17 +453,19 @@ Topic: `inventory`, partition: `0`. No collection name will be synthesized.
 
 ### Stream invalidation
 
-This example assumes a database-scoped stream configured to capture `app`. Topic: `inventory`, partition: `0`. Because the native invalidate event has no namespace, the key and envelope use `databaseName=null`; the source uses `db=null` and `collection=null`. The capture target is not substituted into those fields. This record is emitted when `include.schema.changes` is true, including the 4.0 default. With explicit false, only internal invalidation processing remains active.
+The captured `invalidate` had no `ns`, so the proposed key and envelope use `databaseName=null`, and the source uses `db=null` and `collection=null`. The known capture target `ddd73_replica` is not substituted. The native `clusterTime` and `wallTime` match the preceding database drop, but the resume token differs.
+
+This record will be emitted when `include.schema.changes` is true, including the proposed 4.0 default. With explicit false, only internal invalidation processing remains active.
 
 ```json
 {
-  "key": { "databaseName": null },
+  "key": {"databaseName": null},
   "value": {
-    "source": { "connector": "mongodb", "name": "inventory", "db": null, "collection": null },
-    "ts_ms": 1789084802200,
+    "source": {"connector": "mongodb", "name": "inventory", "db": null, "collection": null},
+    "ts_ms": 1789536888318,
     "databaseName": null,
     "schemaName": null,
-    "ddl": "{\"_id\":{\"_data\":\"TOKEN_INVALIDATE\"},\"operationType\":\"invalidate\",\"clusterTime\":{\"$timestamp\":{\"t\":1789084802,\"i\":1}}}",
+    "ddl": "{\"_id\":{\"_data\":\"826AAA2A78000000022B042C0100296F14463C6F7065726174696F6E54797065003C64726F704461746162617365000004\"},\"operationType\":\"invalidate\",\"clusterTime\":{\"$timestamp\":{\"t\":1789536888,\"i\":2}},\"wallTime\":{\"$date\":{\"$numberLong\":\"1789536888218\"}}}",
     "tableChanges": []
   }
 }
