@@ -17,7 +17,7 @@ Therefore, these connectors need a way to efficiently buffer in-flight transacti
 * Transaction events must retain their order
 * Serialization overhead should be negligible, keeping throughput comparable with the current map-based approach
 * Column values dominate heap requirements, so provide an optional compression pass to store large transactions efficiently
-* User configurable buffer value chunk size, defaults to 64KB
+* User configurable payload chunk size, defaults to 64KB
 * User configurable cache growth cap, defaults to 65,536 (64K) slots; see [Growth cap](#growth-cap)
 * Store 100M reasonably sized events in heap in under 50GB
 * An option that can ship freely with both upstream and downstream builds of Debezium
@@ -37,7 +37,7 @@ Instead, it focuses on changing how **all the data** is stored within the transa
 
 * Event metadata is stored in parallel primitive arrays, one array per field, rather than one object per event.
   An event is no longer an object; it is an index into those arrays.
-* Event column values are serialized into large, fixed-size byte chunks that are shared by many events, rather than being held as individual `String` or `Object` instances.
+* Everything else an event carries, which for most events is its column values, is serialized into large, fixed-size byte chunks that are shared by many events, rather than being held as individual `String` or `Object` instances.
 * A chunk is optionally compressed once it fills, since a full chunk is never written to again.
 
 We will first take a look at a connector-centric flavor, showcasing the internal storage pattern, which is at the heart of the change.
@@ -71,12 +71,12 @@ public class PackedTransaction {
     private long[] rowIdHi = new long[8]; // RowIdCodec.Packed hi bits
     private long[] rowIdLo = new long[8]; // RowIdCodec.Packed lo bits
     private int[] table = new int[8]; // TableId interning via TableDictionary 
-    private int[] valueChunks = new int[8]; // -1 carries no values
-    private int[] valueOffset = new int[8];
-    private int[] valueLength = new int[8];
+    private int[] payloadChunks = new int[8]; // -1 carries no payload
+    private int[] payloadOffset = new int[8];
+    private int[] payloadLength = new int[8];
     
-    // Memory chunks with serialized event values
-    private final List<ValueChunk> chunks = new ArrayList<>();
+    // Memory chunks with serialized event payloads
+    private final List<PayloadChunk> chunks = new ArrayList<>();
 
     // ... methods shown in the sections that follow
 }
@@ -103,9 +103,9 @@ Each field is packed into the smallest primitive that represents it losslessly:
 | `rsIdOffset` | `short` | 2 | The trailing segment of the `rs_id` |
 | `rowIdHi`, `rowIdLo` | `long` | 16 | The `ROWID` as the two halves of `RowIdCodec.Packed` |
 | `table` | `int` | 4 | The `TableId`, interned to an integer by `TableDictionary` |
-| `valueChunks` | `int` | 4 | Which chunk holds the event's values, or `-1` for none |
-| `valueOffset` | `int` | 4 | Where the values start within that chunk |
-| `valueLength` | `int` | 4 | How many bytes the values occupy |
+| `payloadChunks` | `int` | 4 | Which chunk holds the event's payload, or `-1` for none |
+| `payloadOffset` | `int` | 4 | Where the payload starts within that chunk |
+| `payloadLength` | `int` | 4 | How many bytes the payload occupies |
 | Total | | 59 | |
 
 Two of these replace objects that are surprisingly expensive in the current layout.
@@ -113,9 +113,11 @@ The `rs_id` is a fixed-format string of three hexadecimal segments of 6, 8, and 
 The first two segments are 56 bits and pack into a single `long`, and the third is 16 bits and fits a `short`, so the value is kept as 10 bytes of primitives rather than as a `String` with its backing byte array.
 The `TableId` repeats across nearly every event in a transaction, so `TableDictionary` assigns each distinct table an integer once, and events store only that integer.
 
-The third group is the list of `ValueChunk` instances that hold the serialized column values.
-The last three metadata arrays are what tie an event to its values: a chunk index, an offset, and a length.
-Events that carry no values record a chunk index of `-1` and consume no chunk space.
+The third group is the list of `PayloadChunk` instances that hold each event's serialized _payload_.
+The payload is everything about an event that is not in the metadata arrays.
+For a DML event that is its old and new column values, but other event types carry other things, which is covered under [Payload encoding](#payload-encoding).
+The last three metadata arrays are what tie an event to its payload: a chunk index, an offset, and a length.
+Events that carry no payload record a chunk index of `-1` and consume no chunk space.
 
 #### Appending events
 
@@ -123,29 +125,27 @@ Events that carry no values record a chunk index of `-1` and consume no chunk sp
 /**
  * Appends an event read from JDBC to this transaction.
  * 
- * @param row the event row data
+ * @param event the parsed event, never {@code null}
  * @param tableIdDict the table id dictionary for interning, never {@code null}
- * @param oldValues the event's old values in column position order
- * @param newValues the event's new values in column position order
  * @return the index within the immutable event metadata arrays
  */
-int append(LogMinerEventRow row, TableDictionary tableIdDict, Object[] oldValues, Object[] newValues) {
+int append(LogMinerEvent event, TableDictionary tableIdDict) {
     ensureCapacity(eventCount + 1);
     
-    // Compute eventId and write row data into per-event metadata arrays by eventId
+    // Compute eventId and write event data into per-event metadata arrays by eventId
     final int eventId = eventCount++;
     
-    if (oldValues == null && newValues == null) {
-        // Events like INTERNAL, ROLLBACK TO SAVEPOINT, etc. have no values
-        valueChunks[eventId] = -1;
+    // Serializes event data, similar to Ehcache Serdes used today, minus metadata fields
+    final byte[] payload = OraclePayloadCodec.encode(event);
+    if (payload == null) {
+        // Events like INTERNAL, ROLLBACK TO SAVEPOINT, etc. have no payload
+        payloadChunks[eventId] = -1;
     }
     else {
-        // Serializes event data, similar to Ehcache Serdes used today, minus metadata fields
-        final byte[] encodedValues = ValueCodec.encode(oldValues, newValues);
-        final ValueChunk chunk = writableChunk(encodedValues.length);
-        valueChunks[eventId] = chunks.size() - 1; // already sized earlier
-        valueOffset[eventId] = chunk.append(encodedValues);
-        valueLength[eventId] = encodedValues.length;
+        final PayloadChunk chunk = writableChunk(payload.length);
+        payloadChunks[eventId] = chunks.size() - 1; // already sized earlier
+        payloadOffset[eventId] = chunk.append(payload);
+        payloadLength[eventId] = payload.length;
     }
     return eventId;
 }
@@ -157,25 +157,29 @@ int eventCount() {
 
 Appending an event has two halves.
 
-The metadata half claims the next event id and writes the fields of the `LogMinerEventRow` into the metadata arrays at that index.
+The input is the `LogMinerEvent` that the connector already builds for every row it reads, such as a `DmlEvent` once the DML parser has produced the column values, or a `LobWriteEvent` for a LOB fragment.
+Nothing changes about how events are parsed; what changes is that the event object is no longer retained.
+It is unpacked into the transaction and becomes garbage as soon as `append` returns.
+
+The metadata half claims the next event id and writes the fields common to every `LogMinerEvent` into the metadata arrays at that index.
 Those individual writes are elided from the listing, as each is a single array store, with `packScn` and `RowIdCodec` handling the two fields that need conversion.
 
-The values half only applies to events that carry column values.
-`ValueCodec` serializes the old and new values into a single byte array, in the same spirit as the Serdes used by the Ehcache buffer today, except that the metadata fields are excluded because they already live in the arrays.
+The payload half only applies to events that carry something beyond their metadata.
+`OraclePayloadCodec` serializes it into a single byte array, in the same spirit as the Serdes used by the Ehcache buffer today, except that the metadata fields are excluded because they already live in the arrays.
 The encoded bytes are copied to the tail of the current writable chunk, and the event records where they landed.
-The temporary `encodedValues` array is garbage as soon as `append` returns, so the only long-lived cost of an event's values is the bytes it occupies within the chunk.
+The temporary `payload` array is also garbage as soon as `append` returns, so the only long-lived cost of an event's payload is the bytes it occupies within the chunk.
 
 The supporting helpers are straightforward:
 
 ```java
-private ValueChunk writableChunk(int bytes) {
+private PayloadChunk writableChunk(int bytes) {
     if (chunks.isEmpty() || !chunks.get(chunks.size() - 1).fits(bytes)) {
         if (!chunks.isEmpty()) {
             // Seal on fill: about 0.1 ms per 64 KB, paid in the read loop
             chunks.get(chunks.size() - 1).seal();
         }
         // An event larger than a chunk gets a chunk of its own, sized to fit
-        chunks.add(new ValueChunk(Math.max(ValueChunk.CAPACITY, bytes)));
+        chunks.add(new PayloadChunk(Math.max(PayloadChunk.CAPACITY, bytes)));
     }
     return chunks.get(chunks.size() - 1);
 }
@@ -192,11 +196,11 @@ private void ensureCapacity(int needed) {
 ```
 
 `writableChunk` returns the chunk at the tail of the list, starting a new one when the encoded event does not fit in the space that remains.
-An event's values are never split across chunks, which is what allows a single offset and length to describe them.
-The one case that needs care is an event whose encoded values exceed the chunk capacity, such as a wide row of large character columns, since it would not fit an empty chunk either.
+An event's payload is never split across chunks, which is what allows a single offset and length to describe it.
+The one case that needs care is an event whose encoded payload exceeds the chunk capacity, such as a wide row of large character columns, since it would not fit an empty chunk either.
 Such an event is given a chunk of its own, sized to fit exactly.
 That chunk is full as soon as it is written, so the next event seals it and starts a regular chunk, and nothing else in the design needs to know that chunk sizes can differ.
-When a chunk is replaced, it is sealed first, which is the point where compression happens; see [Value chunks](#value-chunks).
+When a chunk is replaced, it is sealed first, which is the point where compression happens; see [Payload chunks](#payload-chunks).
 
 `ensureCapacity` grows all the metadata arrays together, so that a single capacity check covers every field.
 A transaction starts at 8 slots so that the many small transactions a connector sees stay small.
@@ -281,16 +285,16 @@ void truncateTo(int newSize) {
     }
     
     int lastKept = newSize - 1;
-    while (lastKept >= 0 && valueChunks[lastKept] < 0) {
+    while (lastKept >= 0 && payloadChunks[lastKept] < 0) {
         lastKept--;
     }
     if (lastKept < 0) {
         chunks.clear();
     }
     else {
-        final int keepChunk = valueChunks[lastKept];
+        final int keepChunk = payloadChunks[lastKept];
         chunks.subList(keepChunk + 1, chunks.size()).clear();
-        chunks.get(keepChunk).resetTo(valueOffset[lastKept] + valueLength[lastKept]);
+        chunks.get(keepChunk).resetTo(payloadOffset[lastKept] + payloadLength[lastKept]);
     }
     
     eventCount = newSize;
@@ -305,9 +309,9 @@ Because events are append-only and ordered, truncation is cheap and does not tou
 
 * The metadata arrays need no cleanup.
   Lowering `eventCount` makes the trailing slots unreachable, and later appends overwrite them.
-* The value chunks are trimmed by finding the last retained event that carries values, skipping backward over any value-less events.
-  Every chunk after that event's chunk is dropped, and that event's chunk is reset so that its next write position is the byte immediately after the event's values.
-* If no retained event carries values, every chunk is dropped.
+* The payload chunks are trimmed by finding the last retained event that carries a payload, skipping backward over any events without one.
+  Every chunk after that event's chunk is dropped, and that event's chunk is reset so that its next write position is the byte immediately after the event's payload.
+* If no retained event carries a payload, every chunk is dropped.
 
 #### Metadata visitor
 
@@ -335,12 +339,108 @@ Partial rollbacks (`ROLLBACK TO SAVEPOINT`) are resolved at commit time by match
 This is today's `findRolledBackRange` logic expressed over array indices.
 The undo events are applied in forward order, and each one searches backward for the change it reverses, so that every search sees the outcome of the undo events before it.
 That matching only needs the event type, table, row id, and redo position, all of which are metadata.
-The visitor exposes exactly those fields as primitives, so the rollback pass allocates nothing and never decodes a column value.
 
-#### Value chunks
+It also needs to recognize the undo events themselves, which is a requirement this design places on the event type.
+Today, LogMiner reports an undo as an ordinary INSERT, UPDATE, or DELETE row with its rollback flag set, and the connector turns it into a `RollbackToSavepointEvent` that keeps that event type; the two are told apart by their Java class.
+There is no Java class per event in the packed layout, so `EventType` is extended with connector-assigned values for undo events, one for each operation being reversed.
+The `type` byte is then sufficient on its own to identify both that an event is an undo and what it undoes.
+
+The visitor exposes exactly those fields as primitives, so the rollback pass allocates nothing and never decodes a payload.
+
+#### Payload encoding
+
+The metadata arrays hold the fields that every `LogMinerEvent` has.
+What an event carries beyond those depend on its class, and the Oracle connector has a good number of them:
+
+| Event class | Payload |
+|---|---|
+| `DmlEvent`, `TruncateEvent` | Old and new column values |
+| `RedoSqlDmlEvent` | Old and new column values, redo SQL |
+| `SelectLobLocatorEvent` | Old and new column values, column name, binary flag |
+| `ExtendedStringBeginEvent` | Old and new column values, column name |
+| `XmlBeginEvent` | Old and new column values, column name, transaction sequence |
+| `LobWriteEvent` | Data, offset, length |
+| `XmlWriteEvent` | XML, length |
+| `ExtendedStringWriteEvent` | Data |
+| `XmlEndEvent` | Transaction sequence |
+| `LobEraseEvent`, `RollbackToSavepointEvent`, `LogMinerEvent` | None |
+
+These are the same fields that the per-class `SerdesProvider` implementations of the Ehcache buffer write today, after the common metadata.
+`OraclePayloadCodec` is those providers with the common metadata removed, selected by event type:
 
 ```java
-final class ValueChunk {
+final class OraclePayloadCodec {
+    /**
+     * @return the encoded payload, or {@code null} if the event has nothing beyond its metadata
+     */
+    static byte[] encode(LogMinerEvent event) {
+        final PayloadOutput out = new PayloadOutput();
+        switch (event.getEventType()) {
+            case INSERT, UPDATE, DELETE -> {
+                final DmlEvent dml = (DmlEvent) event;
+                out.writeObjectArray(dml.getOldValues());
+                out.writeObjectArray(dml.getNewValues());
+            }
+            case SELECT_LOB_LOCATOR -> {
+                final SelectLobLocatorEvent locator = (SelectLobLocatorEvent) event;
+                out.writeObjectArray(locator.getOldValues());
+                out.writeObjectArray(locator.getNewValues());
+                out.writeString(locator.getColumnName());
+                out.writeBoolean(locator.isBinary());
+            }
+            case LOB_WRITE -> {
+                final LobWriteEvent lobWrite = (LobWriteEvent) event;
+                out.writeString(lobWrite.getData());
+                out.writeInt(lobWrite.getOffset());
+                out.writeInt(lobWrite.getLength());
+            }
+            // ... the remaining event types that carry a payload
+            default -> {
+                // Undo events, LOB_ERASE, and the like are metadata only
+                return null;
+            }
+        }
+        return out.toByteArray();
+    }
+
+    /**
+     * @param in the event's payload, or {@code null} if it has none
+     */
+    static LogMinerEvent decode(EventType type, Scn scn, TableId tableId, String rowId, String rsId, Instant changeTime, PayloadInput in) {
+        return switch (type) {
+            case INSERT, UPDATE, DELETE -> new DmlEvent(type, scn, tableId, rowId, rsId, changeTime,
+                    in.readObjectArray(), in.readObjectArray());
+            case SELECT_LOB_LOCATOR -> new SelectLobLocatorEvent(type, scn, tableId, rowId, rsId, changeTime,
+                    in.readObjectArray(), in.readObjectArray(), in.readString(), in.readBoolean());
+            case LOB_WRITE -> new LobWriteEvent(type, scn, tableId, rowId, rsId, changeTime,
+                    in.readString(), in.readInt(), in.readInt());
+            // ... the remaining event types
+        };
+    }
+}
+```
+
+`PayloadOutput` and `PayloadInput` stand in for the existing `SerializerOutputStream` and `SerializerInputStream`, whose handling of the types found in parsed column values carries over unchanged.
+
+Three things are worth pointing out.
+
+First, the event type is the only discriminator, so it must identify the shape of the payload unambiguously.
+That is not quite true of `EventType` today, where the Java class carries part of the distinction: a `DmlEvent`, a `RedoSqlDmlEvent`, and a `RollbackToSavepointEvent` can all be an `UPDATE`.
+The Ehcache Serdes work around this by writing the event's fully qualified class name ahead of every event, which is over 50 bytes each time.
+Here the distinction moves into `EventType` instead, as described for undo events under [Metadata visitor](#metadata-visitor), which costs nothing, because the `type` byte is stored either way.
+`RedoSqlDmlEvent` can be handled the same way, or left to the connector configuration that enables it, since that cannot change during the life of a heap buffer.
+
+Second, `decode` is given the metadata rather than reading it from the payload.
+`drain` rebuilds the `Scn`, row id, `rs_id`, and `TableId` from the arrays and passes them in, so that what comes out is the same `LogMinerEvent` that went into `append`, of the same class.
+Everything downstream of the buffer, the `TransactionCommitConsumer` in particular, is unaffected by how the event was stored in the meantime.
+
+Third, all of this is connector code.
+`PackedTransaction` only ever sees a `byte[]` and a length, which is what allows the storage to be shared with connectors whose events look nothing like Oracle's.
+
+#### Payload chunks
+
+```java
+final class PayloadChunk {
     static final int CAPACITY = 64 * 1024; // todo: ideally be configurable
     private static final LZ4Compressor COMPRESSOR = LZ4Factory.fastestInstance().fastCompressor();
     private static final LZ4FastDecompressor DECOMPRESSOR = LZ4Factory.fastestInstance().fastDecompressor();
@@ -349,7 +449,7 @@ final class ValueChunk {
     private int length; // raw bytes used; kept after sealing so decompress knows the size
     private boolean sealed;
 
-    ValueChunk(int capacity) {
+    PayloadChunk(int capacity) {
         data = new byte[capacity];
     }
 
@@ -392,9 +492,9 @@ final class ValueChunk {
 }
 ```
 
-A `ValueChunk` is an append-only byte buffer of a fixed capacity, 64KB by default, that holds the encoded values of as many consecutive events as fit.
+A `PayloadChunk` is an append-only byte buffer of a fixed capacity, 64KB by default, that holds the encoded payloads of as many consecutive events as fit.
 The capacity is only ever larger for a chunk dedicated to a single oversized event.
-Packing many events into one array is where most of the heap saving comes from: the values of hundreds of events share a single array header instead of each value being its own object.
+Packing many events into one array is where most of the heap saving comes from: the payloads of hundreds of events share a single array header instead of each column value being its own object.
 
 A chunk has a simple lifecycle:
 
@@ -416,7 +516,7 @@ The buffer is sized to the larger of the capacity and the chunk's raw length, wh
 A truncation lands in exactly one chunk, so this happens at most once per truncated transaction.
 
 Compression is an optimization layered on top of the layout, not a prerequisite for it.
-As the sizing below shows, the majority of the saving comes from serializing values into chunks at all, so the design remains worthwhile if sealing is disabled.
+As the sizing below shows, the majority of the saving comes from serializing payloads into chunks at all, so the design remains worthwhile if sealing is disabled.
 
 #### The transaction cache
 
@@ -435,9 +535,9 @@ final class PackedTransactionCache {
         countAtBatchStart.clear();
     }
 
-    void append(PackedTransaction tx, LogMinerEventRow row, Object[] oldValues, Object[] newValues) {
+    void append(PackedTransaction tx, LogMinerEvent event) {
         countAtBatchStart.putIfAbsent(tx.transactionId, tx.eventCount());
-        tx.append(row, tables, oldValues, newValues);
+        tx.append(event, tables);
     }
 
     /**
@@ -468,9 +568,9 @@ final class PackedTransactionCache {
         // Forward pass over metadata only: today's findRolledBackRange logic, producing skip bits
         // instead of deleting entries. Rolled-back events are never decoded.
         final BitSet skip = SavepointRollbacks.resolve(tx);
-        tx.drain(skip, tables, (type, scn, table, rowId, rsId, changeTime, oldValues, newValues) -> {
-            // rebuild the event the commit consumer expects; LOB and XML chains merge here as today
-            consumer.accept(DrainedEvents.toLogMinerEvent(type, scn, table, rowId, rsId, changeTime, oldValues, newValues), null, 0L);
+        tx.drain(skip, tables, event -> {
+            // the event is rebuilt as the commit consumer expects; LOB and XML chains merge here as today
+            consumer.accept(event, null, 0L);
         });
     }
 }
@@ -494,11 +594,11 @@ When a commit is observed, the transaction is removed from the cache and emitted
 1. `SavepointRollbacks.resolve` walks the event metadata using the visitor and applies the partial rollback matching the connector performs today.
    Instead of deleting the rolled back events, it produces a `BitSet` with one skip bit per event.
 2. `drain` walks the events in order, ignoring any event whose skip bit is set.
-   For each remaining event, it rebuilds the `Scn`, row id, `rs_id`, and `TableId` from the metadata, decodes the old and new values from the event's chunk, and hands them to the callback.
-   The callback recreates the `LogMinerEvent` that `TransactionCommitConsumer` expects, so LOB and XML event chains are merged exactly as they are today.
+   For each remaining event, it rebuilds the `Scn`, row id, `rs_id`, and `TableId` from the metadata, and has `OraclePayloadCodec.decode` combine them with the event's payload from its chunk.
+   The callback receives the same `LogMinerEvent` that `TransactionCommitConsumer` expects today, so LOB and XML event chains are merged exactly as they are now.
    The body of `drain` is not shown in the `PackedTransaction` listing, as it is the inverse of `append`.
 
-The important property is that values are decoded lazily and only once, at the moment they are dispatched.
+The important property is that payloads are decoded lazily and only once, at the moment they are dispatched.
 An event that was rolled back to a savepoint is never decoded, and a transaction that is rolled back entirely can be dropped from the map without reading any of its chunks.
 
 #### Sizing changes
@@ -511,6 +611,7 @@ The numbers assume:
 * Rows of 10 columns, each holding a 10-character string value
 * Half of the events are INSERTs and half are UPDATEs, with all columns logged
 * The parser stores values as Strings, which is what `LogMinerDmlParser` produces today
+* Every event is a DML event, so its payload is its column values; the tables below therefore refer to values rather than payloads
 
 Treat totals as within about 30 percent; the ratios are the durable part.
 
@@ -600,11 +701,12 @@ This is benign for pause times, and it is the reason the [growth cap](#growth-ca
 ### Generalized `PackedTransaction`
 
 Nothing about the storage pattern above is specific to Oracle.
-Only three things are: the transaction's immutable attributes, the set of per-event metadata fields, and how a row read from the database maps onto those fields.
-The generalized form extracts these three into connector-supplied types and leaves the mechanics (growth, truncation, value chunks, batching, and draining) in shared code.
+Only three things are: the transaction's immutable attributes, the set of per-event metadata fields, and how one of the connector's events maps onto those fields and onto a payload.
+The generalized form extracts these three into connector-supplied types and leaves the mechanics (growth, truncation, payload chunks, batching, and draining) in shared code.
 
 The following classes would exist in the `debezium-common-connector` framework module, so that any future connector could use them.
-Throughout, `A` is the connector's transaction attributes type, `R` is the connector's row type, and `L` is the connector's layout type.
+Throughout, `A` is the connector's transaction attributes type, `R` is the connector's event type, and `L` is the connector's layout type.
+`R` is the parsed event that the connector already builds from what it reads, which for Oracle is `LogMinerEvent`, and not the raw row.
 
 #### Columns
 
@@ -635,19 +737,23 @@ The base class is also the intended extension point for persistence: a variant t
 #### Transaction layout
 
 ```java
-/** What a connector contributes: attributes, columns, and how a row maps onto them. */
+/** What a connector contributes: attributes, columns, and how an event maps onto them. */
 interface TransactionLayout<A, R> {
     List<Column> columns(); // registered once per transaction
-    void write(int id, R row); // metadata only; values go through ValueCodec
-    boolean hasValues(R row);
-    Object[][] values(R row);  // old and new, or null
+    void write(int id, R event); // metadata only
+    byte[] encode(R event); // everything else, or null
+    R decode(A attributes, int id, PayloadInput payload); // payload is null if encode returned null
 }
 ```
 
 The layout is the entire contract between a connector and the buffer.
 It declares the columns, which are registered with the transaction once, when it is created.
-It writes a row's metadata into those columns at a given event id.
-And it answers whether a row carries column values and, if so, supplies the old and new value arrays for `ValueCodec` to encode.
+It writes an event's metadata into those columns at a given event id.
+It encodes whatever else the event carries into a payload, or returns `null` if there is nothing else.
+And it reverses the two, rebuilding the event from its columns at a given event id plus the payload.
+
+The framework never looks inside a payload.
+It has no notion of old and new column values, or of any other event shape, so a connector is free to model its events however it needs to, as Oracle does with its LOB and XML events.
 
 A layout instance belongs to exactly one transaction, because the columns it declares hold that transaction's data.
 
@@ -659,19 +765,20 @@ final class PackedTransaction<A, R, L extends TransactionLayout<A, R>> {
     final A attributes; // immutable, connector-defined
     private final L layout;
     private final List<Column> columns; // layout's columns plus the three below
-    private final IntColumn valueChunk, valueOffset, valueLength;
-    private final List<ValueChunk> chunks;
+    private final IntColumn payloadChunk, payloadOffset, payloadLength;
+    private final List<PayloadChunk> chunks;
     private int count;
 
-    int append(R row) {
+    int append(R event) {
         for (Column c : columns) c.ensureCapacity(count + 1);
         final int id = count++;
-        layout.write(id, row);
-        if (layout.hasValues(row)) { 
-            // encode into chunks as before
+        layout.write(id, event);
+        final byte[] payload = layout.encode(event);
+        if (payload != null) { 
+            // append to chunks as before
         } 
         else { 
-            valueChunk.set(id, -1); 
+            payloadChunk.set(id, -1); 
         }
         return id;
     }
@@ -686,7 +793,7 @@ final class PackedTransaction<A, R, L extends TransactionLayout<A, R>> {
 
     /** Commit-time passes are connector code that reads typed columns and sets skip bits, etc. */
     void drain(BitSet skip, DrainConsumer<A, R> consumer) { 
-        /* as before, values decoded lazily */ 
+        /* as before, events decoded lazily with layout.decode */ 
     }
 }
 ```
@@ -695,14 +802,15 @@ The generalized `PackedTransaction` has the same shape as the Oracle-centric one
 
 * The immutable transaction fields collapse into a single connector-defined `attributes` value.
 * The connector's metadata arrays become the layout's columns.
-  The transaction owns only the three value-location columns (`valueChunk`, `valueOffset`, and `valueLength`), because value storage is common to every connector.
+  The transaction owns only the three payload-location columns (`payloadChunk`, `payloadOffset`, and `payloadLength`), because payload storage is common to every connector.
   These are added to the layout's columns so that growth and truncation treat all of them uniformly.
-* `append` grows every column, delegates the metadata write to the layout, and then encodes values into chunks exactly as before.
+* `append` grows every column, delegates the metadata write and the payload encoding to the layout, and then appends the payload to the chunks exactly as before.
 * `truncateTo` trims the chunks exactly as before, and then truncates every column.
 * `drain` keeps the skip-bit contract.
   Whatever commit-time analysis a connector needs, such as Oracle's savepoint rollback resolution, remains connector code that reads the typed columns and produces the `BitSet`.
 
-`ValueChunk` and `ValueCodec` are unchanged, as neither has any knowledge of the connector.
+`PayloadChunk` is unchanged, as it has no knowledge of the connector.
+The payload codec is the opposite: it is entirely connector code, reached through the layout's `encode` and `decode`.
 
 Carrying the layout as the type parameter `L` is what allows connector code to get its own layout back from a transaction, with its typed columns, without a cast.
 
@@ -747,7 +855,7 @@ record OracleTransactionAttributes(
         int redoThreadId) {}
 
 // Connector-specific event metadata layout and Serdes 
-final class OracleLayout implements TransactionLayout<OracleTransactionAttributes, LogMinerEventRow> {
+final class OracleLayout implements TransactionLayout<OracleTransactionAttributes, LogMinerEvent> {
     final ByteColumn type = new ByteColumn();
     final LongColumn scnDelta = new LongColumn();
     final LongColumn changeTime = new LongColumn();
@@ -756,10 +864,10 @@ final class OracleLayout implements TransactionLayout<OracleTransactionAttribute
     final LongColumn rowIdHi = new LongColumn();
     final LongColumn rowIdLo = new LongColumn();
     final RefColumn<TableId> table = new RefColumn<>();
-    // columns(), write(), hasValues(), values() as in the sketch above
+    // columns() and write() as in the sketch above; encode() and decode() delegate to OraclePayloadCodec
 }
 
-final class OracleTransactionCache extends PackedTransactionCache<OracleTransactionAttributes, LogMinerEventRow, OracleLayout> {
+final class OracleTransactionCache extends PackedTransactionCache<OracleTransactionAttributes, LogMinerEvent, OracleLayout> {
     OracleTransactionCache() {
         super(OracleLayout::new);
     }
@@ -780,6 +888,7 @@ The Oracle connector's contribution reduces to three small types:
 
 * `OracleTransactionAttributes` is the immutable transaction metadata, the same fields that headed the Oracle-centric `PackedTransaction`.
 * `OracleLayout` declares the same per-event metadata as before, one column per array, so the footprint remains 59 bytes per event.
+  Its `encode` and `decode` are the `OraclePayloadCodec` from [Payload encoding](#payload-encoding), with `decode` reading the event's metadata from its own columns and taking `startScn` from the attributes.
   The table is held in a `RefColumn<TableId>` rather than as an interned integer, which removes the need for `TableDictionary` at the same 4 bytes per event.
 * `OracleTransactionCache` adds the one operation the framework leaves open, `commit`.
   It follows the same two passes as before: resolve savepoint rollbacks into skip bits by reading the layout's typed columns, and then drain the transaction into the `TransactionCommitConsumer`, which continues to handle LOB processing as it does today.
