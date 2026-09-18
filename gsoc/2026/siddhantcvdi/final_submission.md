@@ -9,7 +9,7 @@
 
 SQLite is a lightweight, embedded relational database used across desktop, mobile, and edge or IoT applications, where it serves as the primary store for local application state. Despite that reach, no production-ready Change Data Capture connector existed for it. Unlike the databases Debezium already supports, SQLite exposes no logical replication stream: its write-ahead log is physical, storing changed database pages rather than a description of the rows that changed, so there is nothing for an external reader to subscribe to.
 
-This project delivers an incubating Debezium source connector for SQLite that creates the logical change stream SQLite does not provide. For each captured table, the connector installs standard SQL triggers that record every insert, update, and delete into an internal `_debezium_cdc_log` table, in commit order, using only portable SQL and no changes to the host application. It runs the database in WAL mode so capture and the application never block each other, performs a consistent initial snapshot anchored to the log's high-water mark for a lossless handoff to streaming, and then streams changes by polling the log table and emitting standard Debezium change events. The connector also detects schema changes while streaming, reconciles its triggers, and emits schema change events, and it maps SQLite's dynamically typed values onto fixed Kafka Connect schemas. By bridging SQLite with Kafka and Debezium Server, it brings audit trails, observability, and edge-to-cloud pipelines to the large ecosystem of applications already built on SQLite.
+This project delivers an incubating Debezium source connector for SQLite that creates the logical change stream SQLite does not provide. For each captured table, the connector installs standard SQL triggers that record every insert, update, and delete into an internal `_debezium_cdc_log` table, in commit order, using only portable SQL and no changes to the host application. This table is the logical change log the connector maintains inside the database, the readable row-level stream that SQLite itself does not expose. It runs the database in WAL mode so capture and the application never block each other, performs a consistent initial snapshot anchored to the log's high-water mark for a lossless handoff to streaming, and then streams changes by polling the log table and emitting standard Debezium change events. The connector also detects schema changes while streaming, reconciles its triggers, and emits schema change events, and it maps SQLite's dynamically typed values onto fixed Kafka Connect schemas. By bridging SQLite with Kafka and Debezium Server, it brings audit trails, observability, and edge-to-cloud pipelines to the large ecosystem of applications already built on SQLite.
 
 ---
 
@@ -57,7 +57,7 @@ This project delivers an incubating Debezium source connector for SQLite that cr
 
 ### Documentation
 
-- A full connector documentation page (overview, how the connector works, data change events, schema change events, data type mappings, setup and deployment, connector properties, monitoring, and limitations) for the Debezium documentation site, plus a repository README.
+- A full connector [documentation page](https://github.com/debezium/debezium/blob/main/documentation/modules/ROOT/pages/connectors/sqlite.adoc) (overview, how the connector works, data change events, schema change events, data type mappings, setup and deployment, connector properties, monitoring, and limitations) for the Debezium documentation site, plus a repository [README](https://github.com/debezium/debezium-connector-sqlite/blob/main/README.md).
 
 ---
 
@@ -69,20 +69,20 @@ There was no separate testing phase. Tests were written with each phase and had 
 
 The first three weeks were research and design: studying SQLite's internals (the WAL format, the B-tree page and record layout, and type affinity), evaluating the change-capture approaches, building prototypes, and writing the SQLite connector design document. Implementation then proceeded through an eight-phase plan.
 
-| Phase | Work | Issue | PR | Status |
-|---|---|---|---|---|
-| Phase 0: Foundations | Bootstrap the build | [dbz#2043](https://github.com/debezium/dbz/issues/2043) | [#1](https://github.com/debezium/debezium-connector-sqlite/pull/1) | Merged |
-| Phase 0: Foundations | Connector skeleton classes | [dbz#2052](https://github.com/debezium/dbz/issues/2052) | [#2](https://github.com/debezium/debezium-connector-sqlite/pull/2) | Merged |
-| Phase 0: Foundations | CDC log contract, test helper, and trigger generator | [dbz#2059](https://github.com/debezium/dbz/issues/2059) | [#3](https://github.com/debezium/debezium-connector-sqlite/pull/3) | Merged |
-| Phases 1-3: Configuration, schema loading, snapshot | Configure, start, and snapshot | [dbz#2069](https://github.com/debezium/dbz/issues/2069) | [#6](https://github.com/debezium/debezium-connector-sqlite/pull/6) | Merged |
-| Phases 1-3: Configuration, schema loading, snapshot | Install the CDC capture triggers | [dbz#2161](https://github.com/debezium/dbz/issues/2161) | [#7](https://github.com/debezium/debezium-connector-sqlite/pull/7) | Merged |
-| Phase 4: Streaming and handoff | Stream ongoing changes and hand off from the snapshot | [dbz#2160](https://github.com/debezium/dbz/issues/2160) | [#8](https://github.com/debezium/debezium-connector-sqlite/pull/8) | Merged |
-| Phase 5: Schema change detection | Detect schema changes while streaming | [dbz#2377](https://github.com/debezium/dbz/issues/2377) | [#10](https://github.com/debezium/debezium-connector-sqlite/pull/10) | Under review |
-| Phase 5: Schema change detection | Emit schema change events | [dbz#2486](https://github.com/debezium/dbz/issues/2486) | [#13](https://github.com/debezium/debezium-connector-sqlite/pull/13) | Under review |
-| Phase 6: Offset management and log compaction | Resume, compact, and retry transient errors | [dbz#2485](https://github.com/debezium/dbz/issues/2485) | [#12](https://github.com/debezium/debezium-connector-sqlite/pull/12) | Under review |
-| Phase 7: Hardening | Streaming metrics and concurrency hardening | [dbz#2582](https://github.com/debezium/dbz/issues/2582) | [#14](https://github.com/debezium/debezium-connector-sqlite/pull/14) | Under review |
-| Phase 8: Documentation | Connector documentation page (core `debezium/debezium`) and README | [dbz#2542](https://github.com/debezium/dbz/issues/2542) | [#8038](https://github.com/debezium/debezium/pull/8038) | Under review |
-| Supporting | Build against Debezium 3.7.0 | [dbz#2583](https://github.com/debezium/dbz/issues/2583) | [#15](https://github.com/debezium/debezium-connector-sqlite/pull/15) | Merged |
+| Phase | Work | Issue | PR |
+|---|---|---|---|
+| Phase 0: Foundations | Bootstrap the build | [dbz#2043](https://github.com/debezium/dbz/issues/2043) | [#1](https://github.com/debezium/debezium-connector-sqlite/pull/1) |
+| Phase 0: Foundations | Connector skeleton classes | [dbz#2052](https://github.com/debezium/dbz/issues/2052) | [#2](https://github.com/debezium/debezium-connector-sqlite/pull/2) |
+| Phase 0: Foundations | CDC log contract, test helper, and trigger generator | [dbz#2059](https://github.com/debezium/dbz/issues/2059) | [#3](https://github.com/debezium/debezium-connector-sqlite/pull/3) |
+| Phases 1-3: Configuration, schema loading, snapshot | Configure, start, and snapshot | [dbz#2069](https://github.com/debezium/dbz/issues/2069) | [#6](https://github.com/debezium/debezium-connector-sqlite/pull/6) |
+| Phases 1-3: Configuration, schema loading, snapshot | Install the CDC capture triggers | [dbz#2161](https://github.com/debezium/dbz/issues/2161) | [#7](https://github.com/debezium/debezium-connector-sqlite/pull/7) |
+| Phase 4: Streaming and handoff | Stream ongoing changes and hand off from the snapshot | [dbz#2160](https://github.com/debezium/dbz/issues/2160) | [#8](https://github.com/debezium/debezium-connector-sqlite/pull/8) |
+| Phase 5: Schema change detection | Detect schema changes while streaming | [dbz#2377](https://github.com/debezium/dbz/issues/2377) | [#10](https://github.com/debezium/debezium-connector-sqlite/pull/10) |
+| Phase 5: Schema change detection | Emit schema change events | [dbz#2486](https://github.com/debezium/dbz/issues/2486) | [#13](https://github.com/debezium/debezium-connector-sqlite/pull/13) |
+| Phase 6: Offset management and log compaction | Resume, compact, and retry transient errors | [dbz#2485](https://github.com/debezium/dbz/issues/2485) | [#12](https://github.com/debezium/debezium-connector-sqlite/pull/12) |
+| Phase 7: Hardening | Streaming metrics and concurrency hardening | [dbz#2582](https://github.com/debezium/dbz/issues/2582) | [#14](https://github.com/debezium/debezium-connector-sqlite/pull/14) |
+| Phase 8: Documentation | Connector documentation page (core `debezium/debezium`) and README | [dbz#2542](https://github.com/debezium/dbz/issues/2542) | [#8038](https://github.com/debezium/debezium/pull/8038) |
+| Supporting | Build against Debezium 3.7.0 | [dbz#2583](https://github.com/debezium/dbz/issues/2583) | [#15](https://github.com/debezium/debezium-connector-sqlite/pull/15) |
 
 ---
 
@@ -98,4 +98,3 @@ The first three weeks were research and design: studying SQLite's internals (the
 - **Trigger-free logical log via a C extension.** A loadable extension that registers SQLite's `sqlite3_preupdate_hook` would remove trigger write-amplification and the schema-change reconciliation, at the cost of a per-platform binary and an application-side change. It is the main alternative to the trigger-based generator and a natural next iteration.
 - **Support for related databases such as Turso.** Turso builds on SQLite and exposes a compatible change-capture model, so extending the connector or its approach to Turso is a promising direction.
 - **WebAssembly.** Explore whether the source connector, running only on the embedded Debezium engine, can be compiled to WebAssembly to run in constrained or browser environments.
-- **Community channel.** A dedicated [SQLite community channel on Zulip](https://debezium.zulipchat.com/#narrow/channel/633290-community-sqlite) is open for questions and contributions.
