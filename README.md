@@ -18,3 +18,4 @@ When creating a new document, please add it to the list below.
 * [DDD-40](DDD-40.md): Debezium CLI — A Unified Command-Line Interface for CDC Pipeline Lifecycle Management
 * [DDD-55](DDD-55.md): Relational-to-Graph Debezium Source SMT for Neo4j
 * [DDD-57](DDD-57.md): Alerting for Debezium Platform
+* [DDD-68](DDD-68.md): Snapshot Monitoring for Debezium Platform
