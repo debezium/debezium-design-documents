@@ -911,3 +911,76 @@ The Oracle connector's contribution reduces to three small types:
   It follows the same two passes as before: resolve savepoint rollbacks into skip bits by reading the layout's typed columns, and then drain the transaction into the `TransactionCommitConsumer`, which continues to handle LOB processing as it does today.
 
 A second connector, such as Informix, would supply its own attributes record, layout, and commit handling in the same way, and would inherit the storage, compression, truncation, and batching behavior unchanged.
+
+## Alternatives considered
+
+A natural question is why Debezium should build this, rather than adopt an existing open source in-memory store.
+The Oracle connector can already buffer transactions in Infinispan or Ehcache, but neither ships in every build of Debezium, and a requirement here is an option that ships in all of them.
+That leaves the question of whether some other library could fill the role.
+
+### Key-value caches and data grids
+
+This covers the existing Infinispan and Ehcache buffers, as well as alternatives such as Apache Ignite or Apache Commons JCS.
+
+**The unit of storage is wrong.**
+A cache stores entries, so the natural mapping is one entry per event, and the cost of this design's problem is precisely the cost of having one of anything per event.
+A cache that holds its values on the heap holds them by reference, so the roughly 27 objects per event remain, and the cache adds an entry, a key, and its own bookkeeping on top.
+A cache that holds its values serialized or off-heap pays for serialization, a key, hashing, and entry metadata on every event.
+The Ehcache buffer illustrates the point: as noted under [Payload encoding](#payload-encoding), it writes the event's class name and all of its metadata ahead of every event.
+The saving in this design comes from the opposite direction, from hundreds of events sharing one array and from metadata that has no objects at all.
+A cache could only match that if its values were whole chunks rather than events, at which point the cache is reduced to a `Map<Integer, byte[]>`, and everything described in this document would still need to be built on top of it.
+
+**The workload is not a cache workload.**
+A transaction buffer never evicts, because eviction is data loss.
+Nothing expires, and no event is ever looked up by key.
+What it needs is an ordered append, the ability to drop the tail, and a sequential replay, which is the shape of a log and not of a map.
+Forcing that shape onto a map is what creates much of the complexity in the existing buffers:
+
+* Order must be reconstructed with synthetic, counter-based event keys, where here it is the array index.
+* The savepoint rollback pass must deserialize whole events to read their type and row id, where here it is a scan over a few primitive arrays.
+* Undoing a mining pass means tracking and removing individual keys, where here it is a `truncateTo`.
+
+**The dependency has a cost.**
+A new library is a new dependency to ship, to patch, and to support in every build of Debezium.
+This design needs only LZ4, which is already on the Kafka Connect classpath as a runtime dependency of `kafka-clients`, and which can be switched off entirely.
+
+### Apache Arrow
+
+Arrow deserves separate consideration, because it is not a cache.
+It is a columnar, struct of arrays memory format, which is exactly the shape of the metadata in this design, and its variable-width vectors could hold the payloads.
+The following reflects the Arrow Java 19.0.0 documentation.
+
+* **It requires JVM flags.**
+  Arrow Java needs `--add-opens=java.base/java.nio=org.apache.arrow.memory.core,ALL-UNNAMED` on the `java` command line, and fails at runtime without it.
+  A connector is a plugin in a Kafka Connect worker whose JVM options belong to the operator and not to Debezium, so every deployment would need to change how its workers are launched before the connector could start.
+* **It is off-heap only, with manual memory management.**
+  An `ArrowBuf` is a region of direct memory, and in Arrow's words, "we use manual reference counting instead of the garbage collector".
+  Every vector must be closed explicitly, and an allocator that is closed with memory outstanding throws an exception.
+  The reasons Arrow gives for using direct memory are avoiding copies during I/O and sharing memory with native code through JNI, neither of which applies to a buffer that lives and dies inside one JVM.
+  The allocator implementations are based on either Netty or `sun.misc.Unsafe`.
+  Off-heap storage would also move the buffer out of the heap that users size and monitor today, and into native memory, which is sized and monitored separately.
+* **It does not compress in memory.**
+  Arrow's LZ4 and ZSTD buffer compression is a feature of serialized record batches, in other words of data being written to a stream or a file, and not of vectors held in memory.
+  Sealing a full chunk, and reopening a sealed chunk after a truncation, would still have to be built.
+* **It is a great deal of machinery for the need.**
+  What this design requires is eleven primitive arrays and a list of byte buffers.
+  Arrow brings a type system, schemas, null bitmaps, dictionaries, and an interchange format whose purpose is to move data between processes and languages, none of which the buffer uses.
+
+Arrow is the right tool when columnar data has to cross a process or language boundary.
+Here it never leaves the connector.
+
+### What an existing library would provide
+
+This design is bounded by the heap.
+The sizing above puts 100 million events at about 15 to 25 GB, and a transaction that outgrows the heap will still fail.
+An off-heap or disk tier is the one thing that Infinispan and Ehcache provide today that this design does not.
+
+This is not a reason to choose differently, because the two are complementary rather than alternatives.
+Sealed chunks are self-contained byte arrays that are no longer being written to, which makes them a natural unit to spill, and `Column` reserves a place for segment serialization for that purpose.
+A future tier below this design, whether built or adopted, would store chunks and column segments rather than events, and would inherit the same savings.
+
+An earlier revision of this document proposed Chronicle Queue, a disk-based persistent commit log, in pursuit of off-heap and disk persistence.
+This revision addresses the heap buffer instead, since that is the buffer every build of Debezium ships.
+Chronicle also shares the obstacle described for Arrow above, and to a greater degree.
+On Java 17 and later, Chronicle's libraries require eleven `--add-exports` and `--add-opens` arguments on the `java` command line, covering `java.lang`, `java.lang.reflect`, `java.io`, `java.util`, `sun.nio.ch`, `sun.misc`, several `jdk.internal` packages, and the `jdk.compiler` module, and the application fails at startup without them.
+As with Arrow, those arguments belong to whoever operates the Kafka Connect worker, not to the connector.
