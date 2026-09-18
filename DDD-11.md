@@ -16,7 +16,7 @@ Therefore, these connectors need a way to efficiently buffer in-flight transacti
 
 * Transaction events must retain their order
 * Serialization overhead should be negligible, keeping throughput comparable with the current map-based approach
-* Column values dominate heap requirements, so provide an optional compression pass to store large transactions efficiently
+* Column values dominate heap requirements, so provide an optional compression pass to store large transactions efficiently, which the user can turn off; see [Compression](#compression)
 * User configurable payload chunk size, defaults to 64KB
 * User configurable cache growth cap, defaults to 65,536 (64K) slots; see [Growth cap](#growth-cap)
 * Store 100M reasonably sized events in heap in under 50GB
@@ -174,7 +174,7 @@ The supporting helpers are straightforward:
 ```java
 private PayloadChunk writableChunk(int bytes) {
     if (chunks.isEmpty() || !chunks.get(chunks.size() - 1).fits(bytes)) {
-        if (!chunks.isEmpty()) {
+        if (compressed && !chunks.isEmpty()) {
             // Seal on fill: about 0.1 ms per 64 KB, paid in the read loop
             chunks.get(chunks.size() - 1).seal();
         }
@@ -200,7 +200,7 @@ An event's payload is never split across chunks, which is what allows a single o
 The one case that needs care is an event whose encoded payload exceeds the chunk capacity, such as a wide row of large character columns, since it would not fit an empty chunk either.
 Such an event is given a chunk of its own, sized to fit exactly.
 That chunk is full as soon as it is written, so the next event seals it and starts a regular chunk, and nothing else in the design needs to know that chunk sizes can differ.
-When a chunk is replaced, it is sealed first, which is the point where compression happens; see [Payload chunks](#payload-chunks).
+When a chunk is replaced, it is sealed first if compression is enabled, which is the point where compression happens; see [Payload chunks](#payload-chunks) and [Compression](#compression).
 
 `ensureCapacity` grows all the metadata arrays together, so that a single capacity check covers every field.
 A transaction starts at 8 slots so that the many small transactions a connector sees stay small.
@@ -499,7 +499,7 @@ Packing many events into one array is where most of the heap saving comes from: 
 A chunk has a simple lifecycle:
 
 1. **Open.** The chunk accepts appends until an event arrives that does not fit in the remaining space.
-2. **Sealed.** `PackedTransaction` seals the chunk before starting the next one.
+2. **Sealed.** When compression is enabled, `PackedTransaction` seals the chunk before starting the next one.
    Sealing compresses the used portion with LZ4 and replaces the 64KB buffer with the compressed bytes, releasing the original buffer.
    A sealed chunk is not written to again, truncation aside, so compression is a one-time cost of about 0.1 ms per chunk, paid in the read loop.
 3. **Read.** `open()` returns the raw bytes, decompressing if the chunk is sealed, so that events can be decoded at commit time.
@@ -515,8 +515,25 @@ If the truncation point falls inside a chunk that was already sealed, that chunk
 The buffer is sized to the larger of the capacity and the chunk's raw length, which keeps an oversized chunk restorable.
 A truncation lands in exactly one chunk, so this happens at most once per truncated transaction.
 
+#### Compression
+
 Compression is an optimization layered on top of the layout, not a prerequisite for it.
-As the sizing below shows, the majority of the saving comes from serializing payloads into chunks at all, so the design remains worthwhile if sealing is disabled.
+As the sizing below shows, the majority of the saving comes from serializing payloads into chunks at all, so the design remains worthwhile without it.
+
+It is therefore controlled by a user configurable boolean property, e.g. `transaction.buffer.compressed`, that defaults to `true`.
+Like `growthMax`, the configured value is handed to the transaction when it is created, and appears as `compressed` in `writableChunk`.
+That one check is the entire switch.
+When the property is `false`, no chunk is ever sealed, and every other code path already handles an unsealed chunk: `fits` rejects an event that does not fit, `open` returns the buffer as it is, and `reopen` has nothing to do.
+A full chunk simply stays in memory as its raw 64KB buffer.
+
+The trade-off is heap against CPU:
+
+* Enabled, payloads occupy roughly half the heap, assuming the 2x ratio used in the sizing below: about 150 bytes per event rather than about 245, or about 3 GB rather than about 5 GB for the sizing workload.
+  The cost is about 0.1 ms in the read loop for every 64KB of payload, a decompression of each chunk when its transaction commits, and the occasional `reopen` when a truncation lands in a sealed chunk.
+* Disabled, none of that CPU is spent, and the full saving of the layout itself still applies.
+
+Disabling it makes sense where heap is plentiful and the connector is bound by CPU, or where the payloads do not compress, which is the case for data that is already compressed or encrypted, such as most binary LOB content.
+LZ4 gains little on such data while still costing the time to attempt it.
 
 #### The transaction cache
 
