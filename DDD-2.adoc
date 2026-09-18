@@ -1,0 +1,430 @@
+== Debezium integration with Cassandra report for DBZ-3417
+
+_by Stefan Miklosovic / stefan dot miklosovic at instaclustr dot com_
+
+=== Nature of the problem
+
+The problem is rather straightforward however a reader / Cassandra user can be confused by seemingly
+almost random behaviour of Debezium which brings even more complexity to trying to understand what is going on.
+
+All problems observed are a variation of this scenario and reducing everything to this problem and
+trying to solve it will resolve all errorneous behavior.
+
+* I have `cdc_enabled: true` in `cassandra.yaml`
+* I have a table `k1.t1`
+* I have cdc functionality enabled on `k1.t1` by specifying `cdc = true` in `CREATE` statement
+or by `ALTER`-ing it afterwards if that is not the case.
+
+The important point here to make is that it is required to have Debezium running _before_ this
+all happens. In other words:
+
+* I start Cassandra without `k1.t1`
+* I start Debezium
+* After points above, I create table as described above.
+
+The result of this procedure is that a cdc-enabled table will indeed place logs into cdc-raw directory
+to be picked up by Debezium, but Debezium will not react - it just deletes these logs and nothing
+is eventually sent to a respective Kafka topic.
+
+What is even worse is that these commit logs in cdc directory are lost for ever as Debezium will delete them (by default,
+there is a way how to _not_ delete them by implementing own `CommitLogTransfer` but by default
+a commit log transfer implementation will just delete these logs for good).
+
+What is even more strange is that the other table on which a `cdc` is enabled is just pushing these
+messages to a topic fine so the fact that the other table does not produce them is mind-boggling.
+
+To fully understand why this is happening, we need to explain what a write and read path looks like.
+
+=== On Mutation and CommitLog
+
+The building block of any change in Cassandra is `Mutation`. A mutation contains `PartitionUpdate`-s.
+If `Mutation` happens to consist of one "change" only, then this `Mutation` happens to contain
+just one `PartitionUpdate`.
+
+Cassandra appends `Mutation` objects as they come at the end of _commit log segment_. A commit log segment
+is each individual file in commitlog directory.
+
+If CDC is enabled, once a commit log is "full" (for the lack of better words and for brevity), it is
+just copied over to `cdc` dir.
+
+Debezium has a watcher on cdc dir and as soon as a commit log is copied there, Debezim detects it,
+it will read whole log, reconstructs all `Mutation`-s, creates messages and sends them to Kafka.
+
+Hence we clearly see that this process has two parts:
+
+1. *serialize* `Mutation`-s from Java objects to binary blob and store it to a commit log segment
+2. parse a commit log segment and *deserialize* all `Mutation`-s into Java objects and create Kafka messages
+
+=== Write path and serialisation
+
+A mutation is serialized by its `MutationSerializer`. It is not too much important where this
+serializer is called from.
+
+[source,java]
+----
+    public static class MutationSerializer implements IVersionedSerializer<Mutation>
+    {
+        public void serialize(Mutation mutation, DataOutputPlus out, int version) throws IOException
+        {
+            /// other code hidden for brevity
+
+            int size = mutation.modifications.size();
+
+            if (version < MessagingService.VERSION_30)
+            {
+                ByteBufferUtil.writeWithShortLength(mutation.key().getKey(), out);
+                out.writeInt(size);
+            }
+            else
+            {
+                out.writeUnsignedVInt(size);
+            }
+
+            assert size > 0;
+            for (Map.Entry<UUID, PartitionUpdate> entry : mutation.modifications.entrySet())
+                PartitionUpdate.serializer.serialize(entry.getValue(), out, version);
+        }
+----
+
+Here we see that in order to serialize a `Mutation`, we need to iterate over all _modifications_
+a.k.a `PartitionUpdate`-s and we need to serialise these. The serialisation of a Mutation
+is equal to the serialisation of all its modifications.
+
+Let's take a look into `PartitionUpdate` serialisation:
+
+[source,java]
+----
+    public static class PartitionUpdateSerializer
+    {
+        public void serialize(PartitionUpdate update, DataOutputPlus out, int version) throws IOException
+        {
+            try (UnfilteredRowIterator iter = update.unfilteredIterator())
+            {
+                // other code hidden for brevity
+                // serialisation of metadata
+                CFMetaData.serializer.serialize(update.metadata(), out, version);
+                // serialisation of partition itself
+                UnfilteredRowIteratorSerializer.serializer.serialize(iter,
+                     null, out, version, update.rowCount());
+            }
+        }
+----
+
+`updata.metadata()` above returns `CFMetaData`. `CFMetaData` has a field `params` of
+type `TableParams` and this object has a flag called `cdc` which is a boolean saying
+if that particular `PartitionUpdate` relates to a table which is _cdc-enabled_.
+
+From above we see that `PartitionUpdateSerializer` serializes not only partition themselves
+but it also serializes its metadata via `CFMetaDataSerializer`. Let's take a look into it:
+
+[source,java]
+----
+    public static class Serializer
+    {
+        public void serialize(CFMetaData metadata,
+                              DataOutputPlus out, int version) throws IOException
+        {
+            UUIDSerializer.serializer.serialize(metadata.cfId, out, version);
+        }
+----
+
+Here, the very important fact is that the serialization of `CFMetaData` in Cassandra terms
+means that _it will take UUID of a table that PartitionUpdate is from and it will serialize it_.
+*Just that UUID*.
+
+=== Read path and deserialisation
+
+Having write path covered, let's look how read path is treated. Read path is a different problem -
+we parse binary commit log and we try to construct all `Mutation`-s from it.
+
+*It is important to realise that this is happening in Debezium context, not in Cassandra.*
+
+Debezium is using Cassandra's class `CommitLogReader` by which a commit log reading is conducted so
+Debezium is not using anything custom but built-in Cassandra functionality.
+
+Cassandra's `CommitLogReader` is used in Debezium's `CommitLogProcessor`. It just scans new commit logs
+as they are copied to cdc dir and it will use `CommitLogReader` in its `process` method.
+
+`CommitLogReader` is reading commit logs via method `readCommitLogSegment` which accepts `CommitLogReadHandler`.
+Commit log handler is the custom implementation of Debezium to actually hook there its functionality to process
+mutations as they come from reading a commit log segment.
+
+For the completeness, the chain of method calls to the place where handler is ultimately called is like
+
+1. `CommitLogReader#readCommitLogSegment`
+2. in method from 1) there is call to private `CommitLogReader#readSection`, a commit log is not read all at once but it is read by chunks - _sections_.
+3. in 2) we pass our handler to `CommitLogReader#readMutation`
+
+At the beginning of 3) we *deserialize* buffer into a mutation.
+
+[source,java]
+----
+        try (RebufferingInputStream bufIn = new DataInputBuffer(inputBuffer, 0, size))
+        {
+            mutation = Mutation.serializer.deserialize(bufIn,
+                                                       desc.getMessagingVersion(),
+                                                       SerializationHelper.Flag.LOCAL);
+----
+
+Finally, at the very bottom we see the handling of just deserialized `Mutation` by our
+custom handler.
+
+[source,java]
+----
+handler.handleMutation(mutation, size, entryLocation, desc);
+----
+
+The implementation of this handler in Debezium looks like this:
+
+[source,java]
+----
+    @Override
+    public void handleMutation(Mutation mutation,
+                               int size,
+                               int entryLocation,
+                               CommitLogDescriptor descriptor) {
+        if (!mutation.trackedByCDC()) {
+            return;
+        }
+
+        // other code
+        // here Mutation is eventually transformed to a Kafka message and sent
+----
+
+This is crucial. The problem is that *a mutation is not tracked by cdc* (empirically verified by putting heavy logging at all the places).
+
+In other words: we have verified that Cassandra serialized data as it is supposed to do but for some reason, its mutation which was previously marked as _cdc-enabled_
+is not deserialized in such a way that `trackedByCDC` would be `true` so that method
+would not return immediately (hence nothing is sent to Kafka).
+
+Let's see the logic behind `Mutation#trackedByCDC` method
+
+[source,java]
+----
+    public boolean trackedByCDC()
+    {
+        return cdcEnabled;
+    }
+----
+
+It is just a getter. This flag is however set on _read path_ by
+`MutationSerializer#deserialize`. At the end of that method it returns
+
+[source,java]
+----
+return new Mutation(update.metadata().ksName, dk, modifications);
+----
+
+And finally, in its constructor we find:
+
+[source,java]
+----
+    protected Mutation(... params for constructor)
+    {
+        this.keyspaceName = keyspaceName;
+        this.key = key;
+        this.modifications = modifications;
+        for (PartitionUpdate pu : modifications.values())
+            cdcEnabled |= pu.metadata().params.cdc;
+    }
+----
+
+Here we see that `cdcEnabled` flag will be `true` in case _whatever_ `PartitionUpdate` metadata has in their params `cdc` to be true.
+
+`PartitionUpdate#metadata` returns `CFMetaData` on deserialization, nothing wrong with that.
+
+Yet we clearly see that after everything is deserialized fully, that flag is still `false` ...
+
+=== The core of the problem
+
+The problems are two. The first problem is that the serialized object of a Mutation
+does not contain its `TableParams` - or to better put it - `PartitionUpdate` of a
+Mutation is not serialized in such a way that it would contain `cdc` flag as well.
+We saw it contains only `cdIf` (uuid) and that is all.
+
+However, it is rather understandable that it is done like that because after a closer look, this information is not necessary. If we refresh the content of `MutationSerializer#deserialize`, it contains
+
+[source,java]
+----
+PartitionUpdate.serializer.deserialize(in, version, flag, key);
+----
+
+Which in turn contains
+
+[source,java]
+----
+CFMetaData metadata = CFMetaData.serializer.deserialize(in, version);
+----
+
+Which finally calls:
+
+[source,java]
+----
+UUID cfId = UUIDSerializer.serializer.deserialize(in, version);
+CFMetaData metadata = Schema.instance.getCFMetaData(cfId);
+----
+
+Hence we see that all it takes to populate `PartitionUpdate` with `CFMetaData`
+is to look what `cfId` we serialized and based on that id, we retrieve
+metadata from `Schema`.
+
+The conclusion is rather clear - we have running node which serializes just fine
+but we have deserialized mutations for which its retrieved `CFMetaData` contains
+`cdc` flag which is `false` so its processing is skipped.
+
+The reason this is happening is that when Debezium starts, it will read Cassadra schema by doing this in `CassandraConnectorContext` constructor:
+
+[source,java]
+----
+Schema.instance.loadDdlFromDisk(this.config.cassandraConfig());
+----
+
+which translates to
+
+[source,java]
+----
+    public void loadDdlFromDisk(String yamlConfig) {
+        // other stuff ...
+        DatabaseDescriptor.toolInitialization();
+        Schema.instance.loadFromDisk(false);
+    }
+----
+
+This is done *once when Debezium starts* and it is *not* changed. So
+if you create a table after Debezium starts, Debezium just does not see it. Same happens when that table already exists but you alter it with `cdc = true` *after Debezium started*.
+
+Debezium's internals are using Cassandra code internals but since Debezium is different JVM / process from Cassandra, what happens in Cassandra after Debezium is started is not visible to Debezium because
+it is just completely different JVM process and if you enabled cdc in Cassandra, Debezium just does not know about it.
+
+However, if you restart Debezium while `cdc` is already enabled,
+*it will read system keyspaces of Cassandra after it persisted these changes to disk to system SSTables* so it will just send it to Kafka fine.
+
+=== Possible solutions
+
+The are two solutions in general to this problem:
+
+The first solution is faking what Cassandra does in Debezium to have same data structures too.
+
+This is rather delicate operation / topic to deal with but it is possible and we chose to go with this solution for a time being.
+
+It merges two main concepts:
+
+a) Debezium is informed about schema changes via provided schema change listener registered on driver
+b) once a respective method on a listner is invoked, we mock same code what Cassandra would invoke but
+in such a way that the parts which would be errorneous (because Debezium just does not run Cassandra) are
+skipped.
+
+By doing b), we are internally holding a logical copy of what the real Cassandra is holding and we are
+synchronizing Cassandra internal structures (keyspaces, tables ...) by registering
+schema change listener and applying same changes to "Cassandra" in Debezium process.
+
+Lets go through the core of this logic, starting with "onKeyspaceAdded":
+
+[source,java]
+----
+schemaChangeListener = new NoOpSchemaChangeListener() {
+    @Override
+    public void onKeyspaceAdded(final KeyspaceMetadata keyspace) {
+        Schema.instance.setKeyspaceMetadata(org.apache.cassandra.schema.KeyspaceMetadata.create(
+                keyspace.getName(),
+                KeyspaceParams.create(keyspace.isDurableWrites(),
+                        keyspace.getReplication())));
+        Keyspace.openWithoutSSTables(keyspace.getName());
+        logger.info("added keyspace {}", keyspace.asCQLQuery());
+    }
+----
+
+Here we fake that we opened a keyspace. This will populate some internal structures of Cassandra and so on so
+our hot Cassandra code in Debezium "knows" what keyspace was added and so on.
+
+On a keyspace's update, we do:
+
+[source,java]
+----
+@Override
+public void onKeyspaceChanged(KeyspaceMetadata current,
+                              KeyspaceMetadata previous) {
+    Schema.instance.updateKeyspace(current.getName(),
+                                   KeyspaceParams.create(current.isDurableWrites(),
+                                                         current.getReplication()));
+}
+----
+
+When a keyspace is removed, we do:
+
+[source,java]
+----
+@Override
+public void onKeyspaceRemoved(final KeyspaceMetadata keyspace) {
+    schemaHolder.removeKeyspace(keyspace.getName());
+    // here KeyspaceMetadata are of Cassandra, not driver's as in method argument
+    Schema.instance.clearKeyspaceMetadata(KeyspaceMetadata.create(
+            keyspace.getName(),
+            KeyspaceParams.create(keyspace.isDurableWrites(),
+                    keyspace.getReplication())));
+}
+----
+
+We are removing a keyspace from our schema holder too. Think about it, if we removed whole keyspace
+by "DROP KEYSPACE abc", all tables are removed too so we just get rid of all tables of that keyspace
+in our schema holder as well.
+
+We left last three methods of a listener - onTableAdded, onTableChanged and onTableRemoved
+for a reader to go through. The code you see is more or less what Cassandra does internally but
+it is refactored in such a way that parts with are not needed (nor desired to be done) are just skipped.
+
+Please follow this https://github.com/smiklosovic/debezium-connector-cassandra/blob/dd2/src/main/java/io/debezium/connector/cassandra/SchemaProcessor.java#L80-L168[link].
+
+Once we put into into the action, metadata will be populated right with `cdc` flag on TableParams and so on.
+`Mutation` will be as well deserialised properly because it will reach into ColumnFamily's metadata which
+has `cdc = true` because we were notified about this change in a listener and we updated
+that table in Cassandra code so the following deserialisation of a Mutation where this code
+is called will not throw:
+
+[source,java]
+----
+public static class Serializer
+{
+    public void serialize(CFMetaData metadata, DataOutputPlus out, int version) throws IOException
+    {
+        UUIDSerializer.serializer.serialize(metadata.cfId, out, version);
+    }
+
+    public CFMetaData deserialize(DataInputPlus in, int version) throws IOException
+    {
+        UUID cfId = UUIDSerializer.serializer.deserialize(in, version);
+        // this might return just null because "our Cassandra in Debezium" knows nothing
+        // about the fact that "the real Cassandra" has added a table in the meanwhile.
+        CFMetaData metadata = Schema.instance.getCFMetaData(cfId);
+        if (metadata == null)
+        {
+            String message = String.format("Couldn't find table for cfId %s. If a table was just " +
+                    "created, this is likely due to the schema not being fully propagated.  Please wait for schema " +
+                    "agreement on table creation.", cfId);
+            throw new UnknownColumnFamilyException(message, cfId);
+        }
+
+        return metadata;
+    }
+----
+
+Keep in mind that we are not "initialising" Cassandra by any way, when Debezium starts,
+internals of Cassandra will already read tables on the disk and so on so internals of Cassandra will be populated
+but we will never be notified about what happens afterwards (that cdc was changed from false to true, for example). For
+that reason there is a schema change listener which synchronizes it. We might be notified about that via listener, that is true,
+but schema refreshment does not always help and we would end up being notified about changes but we would not have any
+way to make these changes visible to Cassandra internal's code - only invoking core Cassandra structures and emulating
+we are running it in a proper Cassandra node will make deserialisation of a mutation possible because previously our
+cdc flag was always false (was not updating) so the handling of such mutation was effectively skipped.
+
+==== Debezium connector as a JVM Agent
+
+The second solution consists of making an agent from Debezium - this means that it will see same data structures as Cassandra,
+by definition. The problem with this solution we see is that it is rather tricky to do because
+Debezium would suddenly start to have same lifecycle as Cassandra (or the other way around - Cassandra
+would have same lifecycle as Debezium) - as they are inherently connected together.
+
+The proble we see is that the dependencies which Debezium uses are not compatible with
+what Cassandra uses and it would be just not possible to "merge it". By merely checking,
+the probability this would be the case is quite high, there is Cassandra connector of
+
