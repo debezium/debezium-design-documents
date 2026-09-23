@@ -7,6 +7,10 @@ However, the platform currently does not provide a secure mechanism to store, ro
 secrets – passwords, API tokens, encryption keys, etc.
 Credentials management is critical for security and compliance, and for production use.
 
+As described in [Giovanni's blog post](https://debezium.io/blog/2026/09/17/debezium-server-native/), using Debezium
+Server with the platform is not a pre-requisite. A standalone Debezium Server can also be used to manage credentials
+separately from the platform. Where applicable, the document will explain this use case.
+
 ## Current state
 
 Secrets currently travel a plaintext path
@@ -91,11 +95,11 @@ before starting it again. In practice, every credential rotation would cause an 
   authenticating with a Kubernetes identity it cannot forge (audience-scoped
   projected ServiceAccount token).
 - **Dynamic database credentials**: short-lived database roles are created for
-each pod by the secret store's database engine. Today, those roles are valid
-for the configured TTL. PostgreSQL only checks credentials when a connection
-is created, so existing connections can keep working until they are recreated.
-Lease renewal is not implemented yet, but this model provides the foundation
-for renewing credentials in the future, up to the configured maximum TTL.
+  each pod by the secret store's database engine. Today, those roles are valid
+  for the configured TTL. PostgreSQL only checks credentials when a connection
+  is created, so existing connections can keep working until they are recreated.
+  Lease renewal is not implemented yet, but this model provides the foundation
+  for renewing credentials in the future, up to the configured maximum TTL.
 - **Static secrets** (Kafka SASL passwords, HTTP tokens, …) resolved from KV
   storage through the same mechanism.
 - The mechanism is **backend-agnostic**: an SPI with one implementation per
@@ -108,7 +112,7 @@ for renewing credentials in the future, up to the configured maximum TTL.
 - **Lease renewal.** Future work. The design leaves room for it, and it is straightforward for OpenBao with PostgreSQL.
 - **Per-pipeline credential segregation.** The trust boundary of this design is
   the Debezium Platform instance: one auth role and one policy, so every
-  pipeline pod holds the same secret-store permissions, and any operator who
+  pipeline pod holds the same secret-store permissions, and any administrator who
   can create a pipeline can bind any credential reference. Pipelines within an
   instance are mutually trusted. Finer segregation is future work.
 - **Production installation of the secret store** (TLS, storage, unseal,
@@ -117,7 +121,7 @@ for renewing credentials in the future, up to the configured maximum TTL.
 - **Human SSO.** This is workload identity; user authentication to the
   platform is a separate concern – OpenBao supports OIDC natively though.
 - **Infrastructure as Code** is out of scope for now. The implementation thus
-  requires a human operator to operate and configure the secret store.
+  requires a human administrator to configure the secret store.
 
 ## Proposed Changes
 
@@ -125,7 +129,7 @@ for renewing credentials in the future, up to the configured maximum TTL.
 
 ```mermaid
 flowchart LR
-    admin(["Platform operator"])
+    admin(["Platform administrator"])
     user(["Pipeline author"])
 
     subgraph platform["Debezium Platform"]
@@ -171,10 +175,13 @@ The design has two independent halves:
    resolve those references: a per-pipeline ServiceAccount with
    `automountServiceAccountToken: false`, an audience-scoped projected token
    volume, and the vault coordinates (address, auth role) as pod
-   environment. Gated behind `pipeline.vault.enabled: false`.
+   environment, including those of vaults referenced from the platform-wide offset and schema history configuration.
+   Gated behind `pipeline.vault.enabled: false`. The conductor exposes that flag,
+   with the store address, auth role and audience, on its configuration endpoint, so the Stage UI shows
+   the Vaults page and the Vault switch only when the feature is on.
 
 The platform is operated by hand rather than provisioned as code, since Infrastructure as Code is out of scope for now. Secret-store
-setup is a short, ordered list of commands an operator runs and verifies — once per platform (Kubernetes auth method),
+setup is a short, ordered list of commands an administrator runs and verifies — once per platform (Kubernetes auth method),
 once per database (mount, connection config, role template, root rotation, policy),
 and one `kv put` per static secret.
 
@@ -238,7 +245,7 @@ The following configuration is required to enable vault integration:
   value: "600"
 ```
 
-On the secret-store side, the operator enables the Kubernetes auth method once and writes a
+On the secret-store side, the administrator enables the Kubernetes auth method once and writes a
 single policy that every pipeline pod shares:
 
 ```shell
@@ -309,12 +316,12 @@ access and a database credential:
 Related: today the operator grants every pipeline ServiceAccount read access to all
 Secrets and ConfigMaps in the namespace, including a ServiceAccount the platform supplies
 ([debezium/dbz#2327](https://github.com/debezium/dbz/issues/2327)). This design turns off
-token automount, so the pod cannot use that access. Implementing dbz#2327 becomes critical, 
+token automount, so the pod cannot use that access. Implementing dbz#2327 becomes critical,
 because only then the access will be totally gone.
 
 ### Conductor data model: the Vault entity as a reference catalog
 
-The conductor already carries the schema for this design, but the `Vault` entity today models 
+The conductor already carries the schema for this design, but the `Vault` entity today models
 a secret _container_; this design repurposes it as a **catalog of references** — records that point at
 credentials the platform itself can never read.
 
@@ -324,16 +331,26 @@ The record changes shape as follows:
 |---|---|---|
 | `id`, `name`, `description` | as is | unchanged; `name` is what a reference uses: `${vault::<name>/<key>}` |
 | `plaintext` | boolean: the values are stored unencrypted | removed; the platform stores no values |
-| `items` | `Map<String, String>` of secret values | the key names the reference serves, no values |
+| `items` | `Map<String, String>` of secret values | `List<String>`; the key names the reference serves, no values |
 | `path` | absent | new column: the location in the secret store, e.g. `db/ecommerce/creds/pipeline` |
 | store address, auth role | absent | not on the entity: platform-wide configuration (`pipeline.vault.address`, `pipeline.vault.authRole`), one store and one role per platform instance |
 
-The key names in `items` are `username` and `password` for a database mount. For a KV entry
-the operator types them in, since the conductor holds no token to list keys. One Flyway
-migration covers the change: add `path`, drop `plaintext`, clear any stored values. The first
-increment keeps `path` inside `items` to avoid that migration; the column is the target.
+Example of a proposed entity:
+```json
+{
+  "id": 1,
+  "name": "ecommerce",
+  "description": "PostgreSQL ecommerce, dynamic role per pod",
+  "path": "db/ecommerce/creds/pipeline",
+  "items": ["username", "password"]
+}
+```
 
-- **Registration:** Creating the vault record becomes the operator's final
+The key names in `items` are `username` and `password` for a database mount. For a KV entry
+the administrator types them in, since the conductor holds no token to list keys. One Flyway
+migration covers the change: add `path`, drop `plaintext`, clear any stored values.
+
+- **Registration:** Creating the vault record becomes the administrator's final
   per-database step: after configuring `db/ecommerce` in the secret store,
   they register the `ecommerce` reference in the UI. Secret-store
   configuration is the authorization decision; the vault record is its
@@ -349,6 +366,13 @@ increment keeps `path` inside `items` to avoid that migration; the column is the
   `pipeline.vault.*` values carry only what every vault shares: whether the
   feature is on, the store address, the auth role and the projected-token
   settings. What differs per vault, its name and path, comes from the bound row.
+  The offset store and schema history follow the same rule without a link table: their credentials come
+  from the chart's `offset.database` block, where `username` and `password` accept a reference or a value --
+  `auth.existingSecret` remains the alternative.
+  Those values are copied into every DebeziumServer CR, so the conductor parses the references,
+  looks the vault names up in the catalog, and emits their coordinates to every pipeline pod.
+  The vault must be registered before the first pipeline is deployed; a reference to an unknown vault is rejected
+  at deploy time.
 - **No writes to the secret store:** `OperatorVaultController.deploy()` stays
   empty by design — the platform holds no secret-store write access. The
   existing vault outbox events find a different purpose: an edit to a
@@ -357,6 +381,10 @@ increment keeps `path` inside `items` to avoid that migration; the column is the
   pod startup. Adding a key in the secret store, by contrast, triggers
   nothing until a source edit introduces a reference to it — that edit flows
   through the normal pipeline-update path and redeploys the pod.
+- **Lifecycle**: `description`, `path` and `items` are editable: an edit propagates to bound pipelines
+  through the outbox events above. `name` is immutable while the vault is bound, because references embed it.
+  Removing a key still referenced by a bound connection, and deleting a vault with bindings are rejected
+  with the list of bound sources and destinations — existing pattern in the Stage UI.
 
 #### Until the Stage UI catches up
 
@@ -369,19 +397,18 @@ published, and the `id` values are the ones returned by the earlier calls.
 ```shell
 # 1. Register the vaults. A vault is only a pointer: a name, the path in the secret store,
 #    and the key names it serves. No secret value is sent, the platform never sees one.
-#    (For now the path travels inside "items"; see the table above.)
 curl -s -X POST https://dmp.example.com/api/vaults -H 'content-type: application/json' -d '{
   "name": "ecommerce",
   "description": "PostgreSQL ecommerce, dynamic role per pod",
-  "plaintext": false,
-  "items": { "path": "db/ecommerce/creds/pipeline", "keys": "username,password" }
+  "path": "db/ecommerce/creds/pipeline",
+  "items": ["username", "password"]
 }'
 
 curl -s -X POST https://dmp.example.com/api/vaults -H 'content-type: application/json' -d '{
   "name": "kafka",
   "description": "Kafka SCRAM user demo, static",
-  "plaintext": false,
-  "items": { "path": "secret/data/debezium/demo/kafka", "keys": "username,password" }
+  "path": "secret/data/debezium/demo/kafka",
+  "items": ["username", "password"]
 }'
 
 # 2. Create the connections. Where a username or password used to be typed, write a
@@ -450,27 +477,30 @@ provide, ready to copy.
 
 ![Add vault form](DDD-67/vault-create.svg)
 
-**Connection form.** Every username, password or token field gets a `Value` / `Vault` switch.
-`Value` keeps today's behaviour. `Vault` replaces the input with a menu of the keys the
-registered vaults serve, grouped by vault, so a reference can only point at a registered vault
-and nobody has to type the `${vault::…}` syntax. The connection then stores the references,
-as in the REST example above. `Validate` is switched off in that case: the platform cannot read
-a vault, so it cannot test the credentials, and a wrong reference shows up when the pipeline
+**Connection form.** Fields marked as secrets in the connector's schema descriptor (using the `PASSWORD`
+field type) get a Value/Vault switch. The UI maintains no list of field names. Connectors that do not mark
+their fields fall back to `username`, `password` and `token` until they do. A page-level switch flips every
+secret field at once -- an individual field can still be overridden. `Value` keeps today's behaviour.
+`Vault` replaces the input with a menu of the keys the registered vaults serve, grouped by vault, so a
+reference can only point at a registered vault and nobody has to type the `${vault::…}` syntax. The connection
+then stores the references, as in the REST example above. `Validate` is switched off in that case:
+the platform cannot read a vault, so it cannot test the credentials, and a wrong reference shows up when the pipeline
 pod starts.
 
 ![Connection form with credentials taken from a vault](DDD-67/connection-create.svg)
 
-**Source form, Filters section.** Picking a connection that uses a vault binds the source to
-that vault; nothing else is asked. The table picker cannot work for such a connection, for the
+**Source form, Filters section.** A source is bound to the vaults its connection references;
+nothing else is asked. Selecting a different connection later rebinds it, and the change redeploys
+the pod like any source edit. The table picker cannot work for such a connection, for the
 same reason `Validate` cannot: it needs a database login, and only the pipeline pod can get one.
 Instead of today's "Failed to load database table/collection" error, the section explains why
-and falls back to typed include and exclude lists. The signal collection check is skipped the
-same way. Nothing breaks silently: a table name that does not exist is reported by the
-pipeline pod when it starts.
+and falls back to typed include and exclude lists. The signal collection check and the table explorer of
+the incremental snapshot action are also off for the same reason. Nothing breaks silently: a table name that
+does not exist is reported by the pipeline pod when it starts.
 
 ![Source form Filters section when credentials come from a vault](DDD-67/source-filters.svg)
 
-### Operator responsibilities
+### Administrator responsibilities
 
 | Work | Cadence | How |
 |---|---|---|
@@ -505,7 +535,7 @@ PostgreSQL 16) that the design depends on:
 **Note:**
 
 The database role that OpenBao creates for a pipeline is small on purpose: it can read
-tables (`SELECT`) and stream changes (`REPLICATION`), nothing more. So as per best practices, the DBAs must 
+tables (`SELECT`) and stream changes (`REPLICATION`), nothing more. So as per best practices, the DBAs must
 create the publication beforehand. A role this small cannot create a publication, and
 `FOR ALL TABLES` even needs a superuser. The DBA creates the publication once, and the
 connector is set to `publication.autocreate.mode=disabled`.
@@ -525,13 +555,26 @@ config when it is off. No offset formats, topic naming, or public APIs change.
    the bound vaults' coordinates as pod environment, behind
    `pipeline.vault.enabled`. Tests both ways.
 3. `debezium-platform`: evolve the `Vault` entity into the reference catalog
-   (a `path` column, key list, binding read in `PipelineMapper`) and
-   implement the Stage vault page and credential dropdown.
+   (a `path` column, key list, binding read in `PipelineMapper`), expose the feature flag to the UI,
+   and implement the Stage vault page and credential dropdown.
 4. `debezium-operator`: dbz#2327 — gate the config-view RBAC on
    `kubernetes-config` being enabled (independent, unblocks the "no silent
    widening" property).
 5. Reference-implementation documentation: secret-store install and the
-   operator command sequences.
+   administrator command sequences.
+
+### Standalone Debezium Server usage
+While the end-to-end design targets Debezium Platform, the Debezium Server secret-resolution
+layer is independent of the platform. A standalone server can be configured with OpenBao connection details
+and a token supplied out of band, initially through an environment variable or a file. The server uses that
+token to authenticate directly to OpenBao and resolve `${vault::...}` references when the configuration is read.
+
+One way to provision such a token is -- assuming the `bao` cli is properly authenticated:
+```shell
+bao token create -policy=pipeline -ttl=720h -orphan -display-name=dbz-server-vm1
+```
+Note that the token is valid for 720 hours (30 days) and is orphaned, meaning it will not be revoked when
+the parent token expires or is revoked.
 
 ## Rejected Alternatives
 
@@ -554,25 +597,13 @@ config when it is off. No offset formats, topic naming, or public APIs change.
   complement for credentials shorter-lived than the pipeline (e.g. AWS RDS
   IAM's 15-minute tokens).
 - **Conductor-mediated custody** (conductor fetches and injects) —
-  breaks the segregation of privileges described at line 303.
+  breaks the segregation of privileges (see table measuring the security posture above).
 
 ## Open Questions
 
 - **Selecting a `SecretStore` implementation.** The factory instantiates `OpenBaoSecretStore`
   directly today. A second store needs a selection mechanism, for example a
   `debezium.vault.<name>.type` property resolved through `ServiceLoader`.
-- **Design-time database access.** Three conductor features open a database connection with
-  the stored credentials: connection validation (`POST /connections/validate`), the table
-  picker in the source Filters section (`GET /connections/{id}/collections`), and the signal
-  collection check. None can work when the credentials are references, because the conductor
-  holds no access to the secret store. The first increment accepts the loss, as shown in the
-  mockups: typed table lists, no validation, errors at pod start. Two candidates to restore
-  them:
-  - Give the conductor its own identity and a separate, metadata-only database role from the
-    secret store. All three features come back, but the conductor then holds a database
-    credential, which changes the "Conductor: no" row of the components table above.
-  - Run the check in a short-lived pod that logs in like a pipeline pod and reports back.
-    The property is kept, at the price of latency and more moving parts.
 
 ## Future Work
 
@@ -580,14 +611,27 @@ config when it is off. No offset formats, topic naming, or public APIs change.
   pipeline runs, modelled on Spring Vault's `SecretLeaseContainer`, and revoke the held lease
   in `close()`.
 - Per-pipeline segregation: per-database policies and auth roles, which
-  requires replacing `bound_service_account_names="*"` (per-database
+  require replacing `bound_service_account_names="*"` (per-database
   namespaces are the variant that avoids a per-pipeline secret-store step).
-- Converting offset storage and schema history JDBC credentials to
-  `${vault::…}` references (mechanism already covers them).
 - Additional engines behind the same SPI: cloud secret managers, `aws`/`gcp`/
   `azure` dynamic engines, PKI for Kafka mTLS (needs `update`, not `read`).
-- The conductor's own database credential (its embedded outbox CDC engine) as
-  a `${vault::…}` consumer.
+- Conductor-held credentials from the secret store. The conductor's own database
+  credential, including the embedded outbox CDC engine, could become a
+  `${vault::…}` consumer. The same mechanism could also restore design-time
+  database access for connection validation, collection listing, signal
+  collection checks, and the incremental snapshot table explorer: the conductor
+  would authenticate with its own workload identity and obtain a separate, metadata-only database role from the secret
+  store. That role would be distinct from pipeline runtime credentials and would
+  grant only the privileges needed for introspection.
+- Direct secret-store catalog discovery. The first increment uses the conductor's
+  `Vault` records as a catalog of references. This avoids giving the platform
+  read access to secrets, but it also duplicates metadata that could exist in the
+  secret store. A future enhancement could use the secret store's catalog instead.
+  The conductor would authenticate to the secret store with a dedicated auth role
+  that can list reference metadata but cannot read secret values. Once platform
+  RBAC is available, the catalog can be filtered per user, or eventually resolved
+  using the user's own identity. Stores that cannot separate list access from
+  secret read access may still require the conductor-side catalog as a fallback.
 
 ## References
 
