@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 740" width="1440" height="740" role="img" aria-label="Stage UI mockup: Vaults list page">
+<title>Stage UI mockup: Vaults list page</title>
+<rect x="0" y="0" width="1440" height="740" rx="0" fill="#f2f2f2" stroke="none" stroke-width="1"/>
+<line x1="30" y1="26" x2="46" y2="26" stroke="#151515" stroke-width="1.6"/>
+<line x1="30" y1="32" x2="46" y2="32" stroke="#151515" stroke-width="1.6"/>
+<line x1="30" y1="38" x2="46" y2="38" stroke="#151515" stroke-width="1.6"/>
+<rect x="72" y="14" width="10" height="10" rx="3" fill="#a6d854" stroke="none" stroke-width="1"/><rect x="84" y="14" width="10" height="10" rx="3" fill="#8fd06a" stroke="none" stroke-width="1"/><rect x="96" y="14" width="10" height="10" rx="3" fill="#77c884" stroke="none" stroke-width="1"/><rect x="72" y="26" width="10" height="10" rx="3" fill="#8fd06a" stroke="none" stroke-width="1"/><rect x="84" y="26" width="10" height="10" rx="3" fill="#77c884" stroke="none" stroke-width="1"/><rect x="96" y="26" width="10" height="10" rx="3" fill="#5fc0a4" stroke="none" stroke-width="1"/><rect x="72" y="38" width="10" height="10" rx="3" fill="#77c884" stroke="none" stroke-width="1"/><rect x="84" y="38" width="10" height="10" rx="3" fill="#5fc0a4" stroke="none" stroke-width="1"/><rect x="96" y="38" width="10" height="10" rx="3" fill="#55b7dc" stroke="none" stroke-width="1"/><text x="118" y="40" font-family="'Red Hat Display','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="25" font-weight="500" fill="#151515" text-anchor="start">debezium</text>
+<rect x="1236" y="14" width="42" height="36" rx="8" fill="#ffffff" stroke="#8a8d90" stroke-width="1"/>
+<rect x="1286" y="14" width="64" height="36" rx="8" fill="#ffffff" stroke="#8a8d90" stroke-width="1"/>
+<circle cx="1308" cy="32" r="5" fill="none" stroke="#151515" stroke-width="1.4"/>
+<path d="M1328 29 l5 6 l5 -6 z" fill="#151515"/>
+<rect x="1250" y="25" width="14" height="14" rx="2" fill="none" stroke="#151515" stroke-width="1.4"/>
+<line x1="1368" y1="14" x2="1368" y2="50" stroke="#d2d2d2" stroke-width="1"/>
+<circle cx="1398" cy="32" r="8" fill="none" stroke="#151515" stroke-width="1.4"/>
+<text x="1398" y="36.5" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="11" font-weight="600" fill="#151515" text-anchor="middle">?</text>
+<path d="M38 91 h9 a2.5 2.5 0 0 1 0 5 h-6 a2.5 2.5 0 0 0 0 5 h9" fill="none" stroke="#4d4d4d" stroke-width="1.3"/><circle cx="38" cy="91" r="1.6" fill="none" stroke="#4d4d4d" stroke-width="1.2"/>
+<text x="60" y="101" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="14.5" font-weight="400" fill="#4d4d4d" text-anchor="start">Pipelines</text>
+<path d="M38 134 h9 a2.5 2.5 0 0 1 0 5 h-6 a2.5 2.5 0 0 0 0 5 h9" fill="none" stroke="#4d4d4d" stroke-width="1.3"/><circle cx="38" cy="134" r="1.6" fill="none" stroke="#4d4d4d" stroke-width="1.2"/>
+<text x="60" y="144" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="14.5" font-weight="400" fill="#4d4d4d" text-anchor="start">Sources</text>
+<path d="M38 177 h9 a2.5 2.5 0 0 1 0 5 h-6 a2.5 2.5 0 0 0 0 5 h9" fill="none" stroke="#4d4d4d" stroke-width="1.3"/><circle cx="38" cy="177" r="1.6" fill="none" stroke="#4d4d4d" stroke-width="1.2"/>
+<text x="60" y="187" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="14.5" font-weight="400" fill="#4d4d4d" text-anchor="start">Transforms</text>
+<path d="M38 220 h9 a2.5 2.5 0 0 1 0 5 h-6 a2.5 2.5 0 0 0 0 5 h9" fill="none" stroke="#4d4d4d" stroke-width="1.3"/><circle cx="38" cy="220" r="1.6" fill="none" stroke="#4d4d4d" stroke-width="1.2"/>
+<text x="60" y="230" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="14.5" font-weight="400" fill="#4d4d4d" text-anchor="start">Destinations</text>
+<path d="M38 263 h9 a2.5 2.5 0 0 1 0 5 h-6 a2.5 2.5 0 0 0 0 5 h9" fill="none" stroke="#4d4d4d" stroke-width="1.3"/><circle cx="38" cy="263" r="1.6" fill="none" stroke="#4d4d4d" stroke-width="1.2"/>
+<text x="60" y="273" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="14.5" font-weight="400" fill="#4d4d4d" text-anchor="start">Connections</text>
+<rect x="22" y="293" width="244" height="36" rx="6" fill="#ffffff" stroke="none" stroke-width="1"/>
+<rect x="15" y="293" width="3" height="36" rx="1.5" fill="#0066cc" stroke="none" stroke-width="1"/>
+<rect x="38" y="308" width="12" height="9" rx="2" fill="none" stroke="#151515" stroke-width="1.4"/><path d="M41 308 v-2.5 a3 3 0 0 1 6 0 v2.5" fill="none" stroke="#151515" stroke-width="1.4"/>
+<text x="60" y="316" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="14.5" font-weight="500" fill="#151515" text-anchor="start">Vaults</text>
+<path d="M40 357 h10 l-1.5 -2.5 v-3.5 a3.5 3.5 0 0 0 -7 0 v3.5 z M43.5 359 h3" fill="none" stroke="#4d4d4d" stroke-width="1.3"/>
+<text x="60" y="359" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="14.5" font-weight="400" fill="#4d4d4d" text-anchor="start">Alerts</text>
+<path d="M238 351 l5 5 l5 -5" fill="none" stroke="#4d4d4d" stroke-width="1.5"/>
+<rect x="280" y="66" width="1136" height="652" rx="16" fill="#ffffff" stroke="none" stroke-width="1"/>
+<text x="312" y="116" font-family="'Red Hat Display','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="26" font-weight="500" fill="#151515" text-anchor="start">Vaults</text>
+<text x="312" y="144" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="14" font-weight="400" fill="#4d4d4d" text-anchor="start">A vault is a reference to credentials kept in an external secret store. The platform never stores, reads or displays the values.</text>
+<rect x="312" y="164" width="1072" height="62" rx="6" fill="#f3f0ff" stroke="none" stroke-width="1"/>
+<rect x="312" y="164" width="3" height="62" rx="1.5" fill="#5e40be" stroke="none" stroke-width="1"/>
+<circle cx="338" cy="184" r="8" fill="#5e40be"/><text x="338" y="188.5" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="12" font-weight="700" fill="#ffffff" text-anchor="middle">i</text>
+<text x="358" y="189" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#151515" text-anchor="start">The secret store is configured by the platform administrator</text>
+<text x="358" y="210" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="13" font-weight="400" fill="#4d4d4d" text-anchor="start">Address</text>
+<text x="414" y="210" font-family="'Red Hat Mono','DejaVu Sans Mono',Menlo,Consolas,monospace" font-size="12.5" font-weight="400" fill="#151515" text-anchor="start">http://openbao.openbao.svc.cluster.local:8200</text>
+<text x="782" y="210" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="13" font-weight="400" fill="#4d4d4d" text-anchor="start">Auth role</text>
+<text x="844" y="210" font-family="'Red Hat Mono','DejaVu Sans Mono',Menlo,Consolas,monospace" font-size="12.5" font-weight="400" fill="#151515" text-anchor="start">pipeline</text>
+<text x="932" y="210" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="13" font-weight="400" fill="#4d4d4d" text-anchor="start">Token audience</text>
+<text x="1032" y="210" font-family="'Red Hat Mono','DejaVu Sans Mono',Menlo,Consolas,monospace" font-size="12.5" font-weight="400" fill="#151515" text-anchor="start">openbao</text>
+<rect x="312" y="250" width="320" height="36" rx="6" fill="#ffffff" stroke="#8a8d90" stroke-width="1"/>
+<circle cx="329" cy="266" r="4.5" fill="none" stroke="#4d4d4d" stroke-width="1.4"/><line x1="332.5" y1="269.5" x2="337" y2="274" stroke="#4d4d4d" stroke-width="1.4"/>
+<text x="348" y="273" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="14" font-weight="400" fill="#8a8d90" text-anchor="start">Find by name</text>
+<rect x="648" y="250" width="104" height="36" rx="18" fill="#0066cc" stroke="none" stroke-width="1"/><text x="700.0" y="273" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="14" font-weight="500" fill="#ffffff" text-anchor="middle">Add vault</text>
+<text x="1384" y="273" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="13" font-weight="400" fill="#4d4d4d" text-anchor="end">3 items</text>
+<text x="328" y="328" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="13.5" font-weight="600" fill="#151515" text-anchor="start">Name</text>
+<text x="612" y="328" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="13.5" font-weight="600" fill="#151515" text-anchor="start">Path in the secret store</text>
+<text x="952" y="328" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="13.5" font-weight="600" fill="#151515" text-anchor="start">Keys</text>
+<text x="1162" y="328" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="13.5" font-weight="600" fill="#151515" text-anchor="start">Used in</text>
+<line x1="312" y1="342" x2="1384" y2="342" stroke="#a3a3a3" stroke-width="1"/>
+<text x="328" y="374" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="14.5" font-weight="500" fill="#0066cc" text-anchor="start">ecommerce</text>
+<text x="328" y="394" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="12.5" font-weight="400" fill="#4d4d4d" text-anchor="start">PostgreSQL ecommerce, dynamic role per pod</text>
+<text x="612" y="382" font-family="'Red Hat Mono','DejaVu Sans Mono',Menlo,Consolas,monospace" font-size="13" font-weight="400" fill="#151515" text-anchor="start">db/ecommerce/creds/pipeline</text>
+<rect x="952" y="366" width="79" height="24" rx="12" fill="#ffffff" stroke="#a3a3a3" stroke-width="1"/><text x="962" y="382" font-family="'Red Hat Mono','DejaVu Sans Mono',Menlo,Consolas,monospace" font-size="12" font-weight="400" fill="#151515" text-anchor="start">username</text>
+<rect x="1039" y="366" width="79" height="24" rx="12" fill="#ffffff" stroke="#a3a3a3" stroke-width="1"/><text x="1049" y="382" font-family="'Red Hat Mono','DejaVu Sans Mono',Menlo,Consolas,monospace" font-size="12" font-weight="400" fill="#151515" text-anchor="start">password</text>
+<text x="1162" y="374" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="14" font-weight="400" fill="#151515" text-anchor="start">1 source</text>
+<text x="1162" y="394" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="12.5" font-weight="400" fill="#0066cc" text-anchor="start">pgsql-src</text>
+<circle cx="1360" cy="373" r="1.7" fill="#4d4d4d"/><circle cx="1360" cy="379" r="1.7" fill="#4d4d4d"/><circle cx="1360" cy="385" r="1.7" fill="#4d4d4d"/>
+<line x1="312" y1="416" x2="1384" y2="416" stroke="#d2d2d2" stroke-width="1"/>
+<text x="328" y="448" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="14.5" font-weight="500" fill="#0066cc" text-anchor="start">kafka</text>
+<text x="328" y="468" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="12.5" font-weight="400" fill="#4d4d4d" text-anchor="start">Kafka SCRAM user, static</text>
+<text x="612" y="456" font-family="'Red Hat Mono','DejaVu Sans Mono',Menlo,Consolas,monospace" font-size="13" font-weight="400" fill="#151515" text-anchor="start">secret/data/debezium/demo/kafka</text>
+<rect x="952" y="440" width="79" height="24" rx="12" fill="#ffffff" stroke="#a3a3a3" stroke-width="1"/><text x="962" y="456" font-family="'Red Hat Mono','DejaVu Sans Mono',Menlo,Consolas,monospace" font-size="12" font-weight="400" fill="#151515" text-anchor="start">username</text>
+<rect x="1039" y="440" width="79" height="24" rx="12" fill="#ffffff" stroke="#a3a3a3" stroke-width="1"/><text x="1049" y="456" font-family="'Red Hat Mono','DejaVu Sans Mono',Menlo,Consolas,monospace" font-size="12" font-weight="400" fill="#151515" text-anchor="start">password</text>
+<text x="1162" y="448" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="14" font-weight="400" fill="#151515" text-anchor="start">1 destination</text>
+<text x="1162" y="468" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="12.5" font-weight="400" fill="#0066cc" text-anchor="start">kafka-dest</text>
+<circle cx="1360" cy="447" r="1.7" fill="#4d4d4d"/><circle cx="1360" cy="453" r="1.7" fill="#4d4d4d"/><circle cx="1360" cy="459" r="1.7" fill="#4d4d4d"/>
+<line x1="312" y1="490" x2="1384" y2="490" stroke="#d2d2d2" stroke-width="1"/>
+<text x="328" y="522" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="14.5" font-weight="500" fill="#0066cc" text-anchor="start">http-sink</text>
+<text x="328" y="542" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="12.5" font-weight="400" fill="#4d4d4d" text-anchor="start">Bearer token for the HTTP sink</text>
+<text x="612" y="530" font-family="'Red Hat Mono','DejaVu Sans Mono',Menlo,Consolas,monospace" font-size="13" font-weight="400" fill="#151515" text-anchor="start">secret/data/debezium/http-sink</text>
+<rect x="952" y="514" width="57" height="24" rx="12" fill="#ffffff" stroke="#a3a3a3" stroke-width="1"/><text x="962" y="530" font-family="'Red Hat Mono','DejaVu Sans Mono',Menlo,Consolas,monospace" font-size="12" font-weight="400" fill="#151515" text-anchor="start">token</text>
+<text x="1162" y="532" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="14" font-weight="400" fill="#4d4d4d" text-anchor="start">Not used yet</text>
+<circle cx="1360" cy="521" r="1.7" fill="#4d4d4d"/><circle cx="1360" cy="527" r="1.7" fill="#4d4d4d"/><circle cx="1360" cy="533" r="1.7" fill="#4d4d4d"/>
+<line x1="312" y1="564" x2="1384" y2="564" stroke="#d2d2d2" stroke-width="1"/>
+<text x="312" y="600" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="12.5" font-weight="400" fill="#4d4d4d" text-anchor="start">Removing a vault changes nothing in the secret store. Pipelines still bound to it can no longer resolve their references at their next restart.</text>
+<text x="1392" y="704" font-family="'Red Hat Text','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="11" font-weight="400" fill="#8a8d90" text-anchor="end">Mockup for DDD-67, not final UI</text>
+</svg>
