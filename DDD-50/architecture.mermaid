@@ -1,0 +1,21 @@
+graph TD
+    db[(Source Database)] -->|WAL Changes| connector[Debezium Connector]
+    
+    subgraph PyDebeziumAI Library Ingestion
+        connector -->|Connect Mode: JPype| jvm_direct[SourceRecordExtractor<br/>JVM Direct Memory]
+        connector -->|JSON Mode| json_broker[ConnectMessageExtractor<br/>JSON Parser]
+    end
+    
+    jvm_direct --> canonical[Canonical Model Layer<br/>DebeziumEventModel]
+    json_broker --> canonical
+    
+    subgraph PyDebeziumAI Core Pipeline
+        canonical --> transform[Transformation Layer<br/>DocumentBuilder / Sanitizer]
+        transform --> sync[Synchronization Layer<br/>SyncManager / Retry / DLQ]
+    end
+    
+    subgraph Vector Store Adapters
+        sync --> chroma[Chroma Adapter]
+        sync --> pgvector[PGVector Adapter]
+        sync --> milvus[Milvus Adapter]
+    end
