@@ -127,6 +127,76 @@ Furthermore, the de-duplication algorithm is based on the assumption that the tr
 
 Since the support for `pg_current_snapshot()` was added on PostgreSQL 13, the read-only incremental snapshot will be available only for PostgreSQl versions greater than or equal to 13. 
 
+### SQL Server
+
+#### Motivation
+
+Read-only incremental snapshots are especially useful when a Debezium SQL Server connector reads from an Always On readable secondary, where avoiding writes is necessary and CDC progress can lag behind the data visible on the replica. The existing CDC watermark, `sys.fn_cdc_get_max_lsn()`, reflects CDC capture progress. Because the capture job runs on the primary and its metadata changes must also be redone on the secondary, this value can lag behind changes already visible in a snapshot read there.
+
+Using this lagging value as the upper boundary of a snapshot window creates a trade-off: waiting for CDC to catch up delays chunk reconciliation, while closing the window too early can allow streamed events to overwrite newer values already read into the chunk. Initial experiments suggest that `sys.dm_hadr_database_replica_states.last_commit_lsn`, read on the replica serving the chunk, can provide a watermark that tracks the data visible there more closely.
+
+#### Goals
+
+* Enable read-only incremental snapshots for SQL Server deployments with a readable Always On secondary.
+* Use a replica-local watermark to bound the changes visible to a chunk read, independently of the asynchronous CDC capture job.
+* Preserve the existing streamed-event buffering and snapshot-row deduplication behavior.
+* Make the delay while CDC catches up, and the AG-specific nature of the approach, explicit.
+
+#### Proposed changes
+
+Use `last_commit_lsn` from `sys.dm_hadr_database_replica_states` as the source of low and high watermarks for a chunk read on an Always On secondary:
+
+1. Read the DMV watermark from the same secondary that will serve the chunk, immediately before starting the chunk's SNAPSHOT-isolation transaction. Convert the DMV's numeric LSN representation to the binary LSN representation used by CDC.
+2. Read the chunk in the SNAPSHOT-isolation transaction and commit it.
+3. Read the DMV watermark again after the commit to establish the high watermark.
+4. Buffer and reconcile streamed CDC events for the chunk's key range using these boundaries, following the existing incremental snapshot window logic.
+5. Before closing the window, establish that CDC has produced and the connector has consumed all captured changes up to the high watermark. How to establish this without an unbounded wait is an open question; see [Closing the window](#closing-the-window).
+
+This separates the snapshot's visibility boundary from CDC capture progress: the DMV can describe changes already visible on the secondary even when CDC has not yet captured them. CDC remains the source of change events, and its catch-up time affects when a chunk can be finalized, not the watermark used to describe the chunk read.
+
+#### Closing the window
+
+Closing a chunk's window safely depends on three separate claims:
+
+1. **The DMV bounds the chunk's visible data.** Preliminary evidence supports this (see below).
+2. **CDC has scanned through the boundary.** Promising but unproven.
+3. **The connector has consumed the relevant CDC rows.** Not yet established.
+
+Waiting for `fn_cdc_get_max_lsn() >= H` (where `H` is the high watermark) is the simplest conservative way to cover claims 2 and 3. However, CDC publishes its high LSN only when it writes change or `lsn_time_mapping` rows. If the last commit at or before `H` belongs to a table that is not CDC-enabled, the published LSN may never reach `H`, so the wait could be unbounded.
+
+In a follow-up test, the primary's CDC log scan reported an `end_lsn` at or beyond the secondary's chunk watermark while `fn_cdc_get_max_lsn()` on the secondary remained behind it. This suggests a possible two-part rule: confirm that the primary's capture scan has passed `H`, then wait until the CDC rows produced by that scan are visible on the secondary and consumed. Limitations:
+
+* `sys.dm_cdc_log_scan_sessions` is [documented](https://learn.microsoft.com/en-us/sql/relational-databases/system-dynamic-management-objects/change-data-capture-sys-dm-cdc-log-scan-sessions) as a primary-side DMV and is not available on an AG secondary, so the connector would need an additional connection to the primary.
+* It has not been shown that `end_lsn` is a sufficient completion signal across workloads or supported configurations.
+
+Alternatives under consideration:
+
+| Option | Potential benefit | Main cost or open question |
+|---|---|---|
+| Wait for `fn_cdc_get_max_lsn() >= H` | Simple, conservative rule | May wait much longer than needed, or indefinitely if CDC does not publish through a non-CDC commit. |
+| Primary scan progress plus CDC consumption | Could show the scanner examined the log through `H` without requiring the published CDC LSN to equal `H` | Requires a trustworthy primary-side scan signal and proof that the corresponding CDC rows are visible on the secondary and consumed. |
+| CDC-enabled sentinel after `H` | A later captured marker advances CDC beyond `H`, acting as a clean barrier | Requires a write on the primary (by the connector or an operator-managed heartbeat), so it is not strictly read-only. |
+| Close after a timeout | Bounds chunk latency | Weakens consistency; should be an opt-in eventual-consistency mode, never a silent safe close. |
+| Serialize snapshot and streaming | Avoids concurrent per-chunk reconciliation | Sacrifices continuous streaming and still needs a well-defined snapshot/stream handoff. |
+
+Initial tests on SQL Server 2022 Linux containers with a two-node, synchronous-commit AG found that the DMV value bounded the tested snapshot reads from both sides, including during replica suspension/resumption and CDC capture-job disruption. In the same setup, `fn_cdc_get_max_lsn()` was a safe lower bound but lagged the visible snapshot data, so it was not a useful upper bound. These results are preliminary and do not establish a supported contract between the DMV LSN and CDC LSNs.
+
+#### Concerns and open questions
+
+* The DMV-based watermark is specific to Always On deployments and requires appropriate DMV access. Single-instance CDC and deployments without a readable AG secondary need a separate approach.
+* The design depends on reading the watermark from the same replica that serves the chunk; routing a chunk and its watermark read to different replicas could invalidate the boundary.
+* A DMV position may correspond to a commit that does not produce a CDC event, so waiting for the published CDC LSN to reach the high watermark may never complete. The options in [Closing the window](#closing-the-window) need to be evaluated before implementation.
+* Using primary scan progress as a completion signal requires a connection to the primary, which is not available through the secondary.
+* The numeric-to-binary LSN conversion and watermark behavior have only been tested in a limited SQL Server configuration. Compatibility across supported SQL Server versions, Windows, asynchronous commit, and other AG topologies remains to be established.
+* The end-to-end chunk reconciliation flow has not yet been tested. It also remains to be determined whether SQL Server can use shared incremental snapshot window logic or needs connector-specific handling.
+
+#### Implementation work items
+
+1. Evaluate the window-closing options. Test with a CDC change at `A`, a non-CDC commit at the boundary `H`, and then a CDC-enabled sentinel after `H`. Record the primary scan's `end_lsn`, the CDC max LSN, capture-table contents, and when those rows become visible on the secondary. Also test the scan-progress rule without a sentinel (`end_lsn >= H`, then verify every CDC-enabled change through `H` is present and consumed). Repeat with CDC paused, with a backlog, with long transactions, and with AG suspension/resume. Define a safe behavior if no option is sufficient.
+2. Validate the DMV watermark and LSN conversion across supported SQL Server versions and relevant AG configurations.
+3. Integrate the low/high watermark source with incremental snapshot event buffering and chunk reconciliation, ensuring watermark and chunk reads use the same replica.
+4. Exercise the complete reconciliation flow and document supported configurations and any required permissions.
+
 ### MongoDB
 
 Also for MongoDB the motivation behind the research a possible way to provide read-only incremental snapshot are the same
