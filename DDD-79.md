@@ -93,10 +93,57 @@ Flow in words:
 
 ### Deployment boundaries
 
-- **Identity provider side:** two client registrations, a public `PKCE` client for stage, and a public device-grant client for the CLI. The conductor itself needs only the issuer URL to validate tokens. Role assignment is whatever the organisation already does.
+- **Identity provider side:** three kinds of client registration. A public `PKCE` client for stage, a public device-grant client for the CLI, and a **confidential client per automation consumer** for the client credentials grant, covering CI jobs and the MCP server. The conductor itself needs only the issuer URL and the expected audience to validate tokens. Role assignment is whatever the organisation already does. See *Automation clients* below.
 - **Conductor side:** the permission catalogue, the role mapping, the augmentor, per-method annotations, the identity endpoint, the internal credential service and filter, and startup validation.
 - **Debezium Server side:** one new configuration property carrying the credential. Nothing to build or mount.
 - **Frontend and CLI side:** the login flows, token handling, and permission-aware rendering described below.
+
+### Automation clients
+
+Non-interactive callers, CI jobs and the MCP server, authenticate with the client credentials grant against a confidential client. This raises three operational questions that the platform does not answer in code but must answer in guidance, because the failure modes land on operators.
+
+**The conductor never handles a client secret.** It is a resource server: it validates tokens and nothing more. Everything below is between the automation and the identity provider.
+
+**One client per consumer, not one shared `automation` client.** Sharing a registration means a compromised CI job cannot be revoked without also breaking the MCP server, and nothing in an audit trail distinguishes them. Separate registrations give independent revocation and attributable access.
+
+**Roles are assigned to the service account user, not to the client.** Enabling service accounts on a confidential client creates an associated user, and that user is what carries the role. This is worth stating because the failure mode when it is missed looks nothing like a configuration error: the token validates perfectly, authentication plainly works, and every call returns 403. `GET /api/me` is the diagnosis, showing an authenticated identity with no roles and no permissions, which points at the role assignment rather than at the credentials. Once assigned, the role appears in the token exactly as it would for a person, so nothing downstream distinguishes machine callers from human ones.
+
+**Distribution.** The baseline is the deployment platform's own secret store injected as an environment variable: a Kubernetes Secret, or the CI system's encrypted variables. Never a chart value, never a repository file. Where the environment supports it, the better answer is **not to distribute a secret at all**: a CI system that can mint its own OIDC token, or a workload with a projected ServiceAccount token, can have that token exchanged for a platform token, which removes the long-lived credential and with it the rotation and revocation problems below.
+
+**Rotation without breaking running jobs.** Keycloak supports two concurrently valid secrets through the `secret-rotation` client policy executor, where `rotatedExpirationPeriod` sets how long the superseded secret stays valid. That provides the overlap required to re-provision consumers at their own pace. Three caveats: the capability is behind the `client-secret-rotation` feature flag, rotation is not automatic and requires an explicit regenerate action, and at most two secrets are live at once.
+
+The exposure is also narrower than it first appears. **A running job holds an access token, not the secret**; the secret is used only when acquiring a token. Rotation therefore affects jobs that need a *new* token during the changeover, not jobs already executing, and an atomic update of the secret store reduces that window to near zero even without the rotation policy.
+
+**Renewal and revocation.** The client credentials grant issues no refresh token, which makes automation simpler than interactive sessions rather than harder. Renewal is a plain re-request. Revocation is disabling the service account or the client, after which the next acquisition fails; there is no long-lived refresh token to hunt down and no session to terminate.
+
+What remains, and is identical for human and machine identities, is that **an already-issued access token cannot be revoked**. The residual exposure is therefore the access-token lifetime. The difference is that for automation that lifetime can be set aggressively short, because re-acquisition is non-interactive and inconveniences nobody. A per-client access token lifespan override is the control, and it should be used.
+
+**Minimising the blast radius.** A leaked token and a leaked secret are different problems and need different mitigations: a token is valid for minutes, scoped to one audience and one role bundle, while a secret mints tokens until it is rotated. Accordingly, an automation client's tokens carry the conductor audience and no other, and its service account holds the narrowest bundle the job actually needs rather than a general-purpose one. A deployment pipeline is a good illustration: it needs writes on sources, destinations and pipeline definitions, but not `pipeline:operate`, because continuous integration deploys configuration while a human decides when to restart something. Permissions apply identically to machine identities, so this is expressed with the same role mechanism as for people.
+
+### Security note: audience validation is mandatory
+
+A token is only trustworthy for the service it was issued *to*. The signature proves who minted it; the `aud` claim proves who it was minted for. The conductor therefore requires an expected audience whenever the feature is enabled, and refuses to start without one.
+
+This is mandatory rather than advisory because of a Keycloak default that makes the gap easy to miss. The `roles` client scope is assigned to every client in a realm and carries the mapper that populates `realm_access.roles`, so a user holding a platform role receives that role in a token issued to **any** application in the realm. Against a conductor with no audience check:
+
+```
+  token minted for an unrelated client in the same realm
+      signature valid    (same realm, same signing keys)   ✓
+      issuer matches                                       ✓
+      not expired                                          ✓
+      realm_access.roles contains dmp-admin                ✓
+      → every permission granted
+```
+
+Nothing rejects it. Any party that receives tokens from users of that realm, including a sibling application that is merely careless rather than hostile, can act against the platform with the user's full authority.
+
+There is a second, quieter consequence. Without an audience the platform's **own** clients cross-accept: a token minted for stage is equally valid presented by the CLI. That removes the ability to reason about where a credential is usable, and weakens the single token model from *one format with a defined scope* to merely one format.
+
+**Quarkus skips audience validation entirely when the property is unset**, so treating it as optional would have meant off by default: a control that exists, appears configured, and does nothing.
+
+The cost is one realm configuration step, and it has to be documented rather than assumed. Every client that calls the conductor, stage, the CLI, and any CI service account, needs an Audience mapper adding the conductor's audience to `aud`. Missing it produces a blanket 401 for that client with nothing in the message pointing at the cause, so an audience rejection must be logged distinctly from a signature or expiry failure. The trade is accepted deliberately: a missing audience check fails silently as privilege escalation, a misconfigured one fails loudly as 401, and loud is the right direction to fail.
+
+[DDD-67](https://github.com/debezium/debezium-design-documents/pull/77) states the same requirement for credentials management; this keeps the two consistent.
 
 ### Security note: the deviation from RFC 10017
 
@@ -363,7 +410,7 @@ Operator-facing configuration, with defaults:
 | `conductor.security.internal-credential.secret` | unset | Secret from which per-pipeline notification credentials are derived |
 | `conductor.security.internal-credential.previous-secret` | unset | Accepted during a rotation window only; remove once all pipelines are re-provisioned |
 | `quarkus.oidc.auth-server-url` | unset | Issuer URL. Required when enabled |
-| `quarkus.oidc.token.audience` | unset | Expected audience. Empty disables the check |
+| `quarkus.oidc.token.audience` | unset | Expected audience. **Required when enabled**, startup fails without it. Quarkus skips the check entirely when empty, so leaving it unset silently disables it |
 | `quarkus.oidc.roles.role-claim-path` | unset | Needed only for providers that place roles outside the default locations |
 
 **There is deliberately one switch.** `quarkus.oidc.tenant-enabled` is *derived* from `conductor.security.enabled` rather than configured alongside it, so authentication and authorization cannot be configured inconsistently. The existing `conductor.oidc.enabled` Helm value is honoured as a deprecated alias for one minor release; if both are set and disagree, startup fails rather than guessing which was meant.
