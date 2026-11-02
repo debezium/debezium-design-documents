@@ -396,6 +396,54 @@ Two callers cannot participate in OIDC, and both are handled without introducing
 
 This replaces the current guard, which rejects requests carrying forwarding headers on the assumption they transited an ingress. That is a network guess rather than an identity check, and any in-cluster caller can bypass it.
 
+**Internal and user endpoints share the `/api` prefix**, so the internal path is explicitly excluded from the general authentication policy rather than being separately routed:
+
+```yaml
+quarkus:
+  http:
+    auth:
+      permission:
+        # More specific than /api/*, so this wins for the internal subtree.
+        # Not unguarded: the credential filter runs ahead of everything here.
+        internal:
+          enabled: ${conductor.security.enabled}
+          paths: /api/internal/*
+          policy: permit
+        # Everything else under /api, including the user-facing snapshot endpoints
+        api:
+          enabled: ${conductor.security.enabled}
+          paths: /api/*
+          policy: authenticated
+```
+
+Both blocks are gated on the same switch, so with the feature disabled neither applies and the behaviour is exactly as it is today.
+
+The exclusion is narrow: it covers one path, the notification callback, and not the user-facing endpoints that the same feature exposes. Snapshot *progress* is read by the browser and the CLI from `/api/pipelines/{id}/snapshots/progress`, which is not under `/api/internal`, so it is gated by an ordinary permission like everything else.
+
+Three layers sit in front of that endpoint, and a request must satisfy all of them:
+
+```
+POST /api/internal/pipelines/42/notifications
+
+  HTTP policy layer          /api/internal/* -> permit
+                             no token demanded, no identity established
+
+  Annotation layer           endpoint explicitly annotated as permitted
+                             no role or permission demanded
+
+  Credential filter          recompute the HMAC for pipeline 42,
+                             constant-time compare
+                             mismatch -> 401, never reaches the resource
+
+  Resource method
+```
+
+The first two deliberately do nothing on this path. **The credential filter is the only thing guarding it**, and it runs before the resource method is invoked.
+
+Excluded does not mean unguarded. The credential check runs on that path ahead of anything else, and the exclusion is symmetric so it cannot be used to widen access in either direction: a user token presented on an internal path is rejected, and an internal credential presented on a user path is rejected. The two credential types are not interchangeable, which is what keeps a narrow exemption from becoming a general one.
+
+One implementation note, because the configuration above is necessary but not sufficient. Path policies and endpoint annotations are evaluated as separate layers, and the platform denies any endpoint that carries no security annotation so that a new endpoint cannot ship unprotected by omission. The notification receiver is therefore annotated explicitly as well, rather than simply left bare.
+
 **The host agent** keeps its shared token, but the token stops being optional: it currently disables authentication entirely when unset. Note that the agent is only reached in host deployment mode with the agent container runtime, and both settings default the other way, so the requirement applies to deployments that actually use the agent, not to every deployment.
 
 ## Configuration
