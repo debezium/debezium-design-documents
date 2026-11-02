@@ -98,6 +98,34 @@ Flow in words:
 - **Debezium Server side:** one new configuration property carrying the credential. Nothing to build or mount.
 - **Frontend and CLI side:** the login flows, token handling, and permission-aware rendering described below.
 
+### Identity provider configuration that lives outside the platform
+
+Three pieces of setup are the operator's responsibility, happen in the identity provider rather than in the chart, and share an unhelpful property: **each one fails opaquely when missed.** They are listed together because they are the realistic source of first-deployment trouble, not because they are difficult.
+
+| Setting | Where | Symptom when wrong |
+|---|---|---|
+| **Audience mapper** on every client that calls the conductor | Client → mappers | Blanket 401 for that client, with nothing naming the audience |
+| **Valid redirect URIs** on the browser client | Client settings | `Invalid parameter: redirect_uri`, shown *before* any login page |
+| **Roles on the service account user**, not on the client, for automation | Client → service account roles | Token validates, authentication plainly works, every call returns 403 |
+
+The diagnosis for the third is `GET /api/me`, which reports an authenticated identity holding no roles and no permissions, pointing at role assignment rather than at credentials.
+
+#### Redirect URIs are coupled to the platform's domain
+
+The browser client is the only one of the four with a redirect URI; the CLI, automation and conductor clients have none, because none of them performs a browser redirect.
+
+The UI *sends* `redirect_uri` in the authorization request, but it does not choose it: the identity provider compares it against the registered list and rejects anything else. That is the control which stops an attacker crafting an authorization URL that returns the code to a host they own. The same value is sent again at the token exchange and must match, proving the party redeeming the code is the one it was issued to.
+
+The value is derived from the browser's own origin rather than configured, so it cannot disagree with where the application was actually loaded from. The consequence is that **two systems must stay in step**:
+
+| Where | Value |
+|---|---|
+| Platform domain configuration | `https://dmp.example.com` |
+| Browser client, valid redirect URIs | `https://dmp.example.com/callback` |
+| Browser client, valid post-logout redirect URIs | `https://dmp.example.com` |
+
+Changing the platform's domain breaks the registration, as does reaching the platform on a second hostname that was never registered. Both fail before a login page appears and report a parameter name rather than a cause, so the coupling is worth stating in the setup documentation rather than leaving operators to infer it.
+
 ### Automation clients
 
 Non-interactive callers, CI jobs and the MCP server, authenticate with the client credentials grant against a confidential client. This raises three operational questions that the platform does not answer in code but must answer in guidance, because the failure modes land on operators.
@@ -106,7 +134,7 @@ Non-interactive callers, CI jobs and the MCP server, authenticate with the clien
 
 **One client per consumer, not one shared `automation` client.** Sharing a registration means a compromised CI job cannot be revoked without also breaking the MCP server, and nothing in an audit trail distinguishes them. Separate registrations give independent revocation and attributable access.
 
-**Roles are assigned to the service account user, not to the client.** Enabling service accounts on a confidential client creates an associated user, and that user is what carries the role. This is worth stating because the failure mode when it is missed looks nothing like a configuration error: the token validates perfectly, authentication plainly works, and every call returns 403. `GET /api/me` is the diagnosis, showing an authenticated identity with no roles and no permissions, which points at the role assignment rather than at the credentials. Once assigned, the role appears in the token exactly as it would for a person, so nothing downstream distinguishes machine callers from human ones.
+**Roles are assigned to the service account user, not to the client.** See the table above for the failure mode; it is listed there because it belongs with the other two pieces of identity-provider setup that fail opaquely, rather than because it is specific to automation.
 
 **Distribution.** The baseline is the deployment platform's own secret store injected as an environment variable: a Kubernetes Secret, or the CI system's encrypted variables. Never a chart value, never a repository file. Where the environment supports it, the better answer is **not to distribute a secret at all**: a CI system that can mint its own OIDC token, or a workload with a projected ServiceAccount token, can have that token exchanged for a platform token, which removes the long-lived credential and with it the rotation and revocation problems below.
 
