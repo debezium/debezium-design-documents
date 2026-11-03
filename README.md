@@ -20,3 +20,4 @@ When creating a new document, please add it to the list below.
 * [DDD-57](DDD-57.md): Alerting for Debezium Platform
 * [DDD-68](DDD-68.md): Snapshot Monitoring for Debezium Platform
 * [DDD-74](DDD-74.md): Graph-to-Relational Debezium SMT for Neo4j
+* [DDD-79](DDD-79.md): Identity and Access Management for the Debezium Platform
