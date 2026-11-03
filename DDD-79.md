@@ -413,7 +413,7 @@ Immediate revocation would require active signalling to terminate live sessions 
 
 - **Identity provider outages do not invalidate existing sessions.** Token signatures are verified against cached signing keys, so in-flight requests and established sessions continue while the cache remains valid. Only new sign-ins fail, which is unavoidable.
 - **Key rotation** is handled by refetching when an unknown key identifier appears, rate-limited so a flood of invalid tokens cannot be turned into an attack on the identity provider.
-- **Enabling the feature requires no data migration**, no resource recreation and no pipeline downtime. Existing pipelines keep running and have their notification credentials provisioned on next reconcile.
+- **Enabling the feature requires no data migration**, but it is not free of pod restarts, and the sequence matters. Provisioning a notification credential changes the generated resource's configuration, which rolls the pipeline's pod. If that were triggered by enabling enforcement, every pipeline that had not yet rolled would have its callbacks rejected in the meantime, and the rotation window does not help: a previous secret expresses "accept A or B", while first enablement is "accept nothing or A". The credential is therefore provisioned **when the secret is configured, not when enforcement is enabled**. A credential nothing verifies is inert, so an operator configures the secret first, forces every pipeline to redeploy, and only then switches enforcement on, at which point every pipeline already holds a credential and no callback is rejected. With no secret configured the generated resource is unchanged from today. See *Upgrade Path for Existing Deployments* below for the concrete sequence.
 - **Misconfiguration fails fast.** The platform refuses to start rather than running half-enforced, because a platform that boots while believing itself protected is worse than one that does not boot.
 
 ## Internal Callers
@@ -490,6 +490,25 @@ Operator-facing configuration, with defaults:
 | `quarkus.oidc.roles.role-claim-path` | unset | Needed only for providers that place roles outside the default locations |
 
 **There is deliberately one switch.** `quarkus.oidc.tenant-enabled` is *derived* from `conductor.security.enabled` rather than configured alongside it, so authentication and authorization cannot be configured inconsistently. The existing `conductor.oidc.enabled` Helm value is honoured as a deprecated alias for one minor release; if both are set and disagree, startup fails rather than guessing which was meant.
+
+## Upgrade Path for Existing Deployments
+
+A platform upgraded to a conductor version carrying this feature is unaffected until an operator opts in: `conductor.security.enabled` defaults to `false`, so installing the new conductor changes nothing for a deployment that leaves it unset.
+
+The transition that needs a runbook is the one the Resilience section states in principle: every already-running pipeline must hold a valid notification credential before `InternalCredentialFilter` starts verifying it, because a pipeline whose generated resource lacks the `Authorization` header set by `notification.http.authorization` has its chunk notifications rejected with a 401 the instant enforcement switches on. That reads as the pipeline failing, not as a sequencing problem, which is exactly the kind of incident this section exists to prevent.
+
+The credential is written into a pipeline's resource by `PipelineMapper`, which reads the internal-credential configuration fresh every time it regenerates that resource. The complication for an existing deployment is that nothing regenerates a resource that is not itself being changed: there is no periodic resync and no redeploy-on-startup, so a pipeline created before `conductor.security.internal-credential.secret` was set keeps running its original resource, credential-less, indefinitely. Setting the secret is necessary but not sufficient; every existing pipeline also has to be told to regenerate.
+
+The upgrade sequence:
+
+1. Set `conductor.security.internal-credential.secret`, leaving `conductor.security.enabled` as it is. `InternalCredentialFilter` is not yet active, so nothing is rejected regardless of what a pipeline's resource carries at this point.
+2. Force every existing pipeline to regenerate its resource, which rolls its pod and makes it start presenting the credential. Today the only way to do this is an ordinary `PUT` on a pipeline's definition, which redeploys unconditionally even when nothing in the definition actually changed, so it doubles as a no-op update that still picks up the new header. It was built for editing one pipeline at a time, not for sweeping a fleet of them, and the platform has no bulk equivalent. This document adds one: a redeploy-all operation, exposed through the conductor API and the CLI, that reconciles every pipeline's resource without touching its stored definition. It exists specifically to make this step a single action rather than a script issuing one `PUT` per pipeline, and it has a second life outside this upgrade, as the general remedy for a pipeline's deployed resource having drifted from what its stored definition would produce.
+3. Confirm every pipeline has rolled before proceeding, rather than assuming the sweep succeeded everywhere.
+4. Set `conductor.security.enabled`. Every pipeline already holds a credential `InternalCredentialFilter` will accept, so enforcement switches on with no callback rejected.
+
+Skipping step 2, or enabling enforcement before every pipeline has rolled, reproduces exactly the failure mode the Resilience section warns against: enforcement and credential provisioning racing each other, with whichever pipelines lose that race having their notifications rejected until they happen to redeploy for an unrelated reason.
+
+This sequence is deliberately left for the operator to drive rather than folded into a single flag that sets the secret, sweeps every pipeline and turns on enforcement automatically. Collapsing it would mean the conductor itself has to decide when every pod has finished rolling before it dares flip the switch, which is a readiness check against infrastructure the platform does not otherwise watch. The manual version is acceptable because the blast radius of getting it wrong is narrow and self-evident: a pipeline that has not yet rolled when enforcement goes on has its notification callbacks rejected, which surfaces immediately as stalled snapshot progress for that pipeline, not as data loss, not as the pipeline stopping, and not as a failure that touches any other pipeline. An operator who enables enforcement a step too early sees exactly which pipelines are affected and fixes it by completing step 2, rather than diagnosing a less legible failure.
 
 ## Prerequisites and Dependencies
 
