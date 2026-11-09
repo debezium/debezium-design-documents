@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 1036" width="1440" height="1036" role="img" aria-label="Stage UI mockup: connection form with prefix-triggered vault reference autocomplete">
+<title>Stage UI mockup: connection form with prefix-triggered vault reference autocomplete</title>
+<defs><filter id="sh" x="-10%" y="-10%" width="120%" height="130%"><feDropShadow dx="0" dy="4" stdDeviation="7" flood-color="#151515" flood-opacity="0.2"/></filter></defs>
+<rect x="0" y="0" width="1440" height="1036" fill="#f2f2f2"/>
+<text x="72" y="42" font-family="'Red Hat Display','Helvetica Neue',Arial,sans-serif" font-size="25" font-weight="500" fill="#151515">debezium</text>
+<rect x="1236" y="14" width="42" height="36" rx="8" fill="#ffffff" stroke="#8a8d90"/>
+<rect x="1286" y="14" width="64" height="36" rx="8" fill="#ffffff" stroke="#8a8d90"/>
+<circle cx="1398" cy="32" r="8" fill="none" stroke="#151515" stroke-width="1.4"/>
+<text x="1398" y="36.5" font-family="'Red Hat Text',Arial,sans-serif" font-size="11" font-weight="600" fill="#151515" text-anchor="middle">?</text>
+<g font-family="'Red Hat Text',Arial,sans-serif" font-size="14.5" fill="#4d4d4d">
+<text x="60" y="101">Pipelines</text><text x="60" y="144">Sources</text><text x="60" y="187">Transforms</text><text x="60" y="230">Destinations</text>
+</g>
+<rect x="22" y="250" width="244" height="36" rx="6" fill="#ffffff"/><rect x="15" y="250" width="3" height="36" rx="1.5" fill="#0066cc"/>
+<text x="60" y="273" font-family="'Red Hat Text',Arial,sans-serif" font-size="14.5" font-weight="500" fill="#151515">Connections</text>
+<text x="60" y="316" font-family="'Red Hat Text',Arial,sans-serif" font-size="14.5" fill="#4d4d4d">Vaults</text>
+<text x="60" y="359" font-family="'Red Hat Text',Arial,sans-serif" font-size="14.5" fill="#4d4d4d">Alerts</text>
+<rect x="280" y="66" width="1136" height="948" rx="16" fill="#ffffff"/>
+<text x="312" y="102" font-family="'Red Hat Text',Arial,sans-serif" font-size="13" fill="#0066cc">Connections</text>
+<text x="392" y="102" font-family="'Red Hat Text',Arial,sans-serif" font-size="13" fill="#4d4d4d">›</text>
+<text x="406" y="102" font-family="'Red Hat Text',Arial,sans-serif" font-size="13" fill="#151515">Create connection</text>
+<text x="312" y="140" font-family="'Red Hat Display',Arial,sans-serif" font-size="26" font-weight="500" fill="#151515">Create connection</text>
+<rect x="544" y="120" width="89" height="24" rx="12" fill="#ffffff" stroke="#a3a3a3"/>
+<text x="554" y="136" font-family="'Red Hat Text',Arial,sans-serif" font-size="12" fill="#151515">PostgreSQL</text>
+<text x="312" y="168" font-family="'Red Hat Text',Arial,sans-serif" font-size="14" fill="#4d4d4d">Literal values still work as before. Type ${ in any field to insert a vault reference.</text>
+<g font-family="'Red Hat Text',Arial,sans-serif" font-size="14" font-weight="600" fill="#151515">
+<text x="312" y="214">Name<tspan fill="#b1380b" dx="3">*</tspan></text>
+</g>
+<rect x="312" y="224" width="520" height="36" rx="6" fill="#ffffff" stroke="#8a8d90"/>
+<text x="324" y="247" font-family="'Red Hat Text',Arial,sans-serif" font-size="14" fill="#151515">pgsql-conn</text>
+<text x="312" y="288" font-family="'Red Hat Text',Arial,sans-serif" font-size="14" font-weight="600" fill="#151515">Description</text>
+<rect x="312" y="298" width="520" height="36" rx="6" fill="#ffffff" stroke="#8a8d90"/>
+<text x="324" y="321" font-family="'Red Hat Text',Arial,sans-serif" font-size="14" fill="#151515">ecommerce database, credentials from the secret store</text>
+<text x="312" y="396" font-family="'Red Hat Display',Arial,sans-serif" font-size="17" font-weight="500" fill="#151515">Enter the connection properties</text>
+<line x1="312" y1="410" x2="832" y2="410" stroke="#d2d2d2"/>
+<g font-family="'Red Hat Text',Arial,sans-serif" font-size="14" font-weight="600" fill="#151515">
+<text x="312" y="444">Hostname<tspan fill="#b1380b" dx="3">*</tspan></text><text x="700" y="444">Port<tspan fill="#b1380b" dx="3">*</tspan></text>
+</g>
+<rect x="312" y="454" width="372" height="36" rx="6" fill="#ffffff" stroke="#8a8d90"/><rect x="700" y="454" width="132" height="36" rx="6" fill="#ffffff" stroke="#8a8d90"/>
+<text x="324" y="477" font-family="'Red Hat Text',Arial,sans-serif" font-size="14" fill="#151515">postgresql-rw.databases.svc.cluster.local</text><text x="712" y="477" font-family="'Red Hat Text',Arial,sans-serif" font-size="14" fill="#151515">5432</text>
+<text x="312" y="518" font-family="'Red Hat Text',Arial,sans-serif" font-size="14" font-weight="600" fill="#151515">Database<tspan fill="#b1380b" dx="3">*</tspan></text>
+<rect x="312" y="528" width="520" height="36" rx="6" fill="#ffffff" stroke="#8a8d90"/>
+<text x="324" y="551" font-family="'Red Hat Text',Arial,sans-serif" font-size="14" fill="#151515">ecommerce</text>
+<g font-family="'Red Hat Text',Arial,sans-serif" font-size="14" font-weight="600" fill="#151515">
+<text x="312" y="604">Username<tspan fill="#b1380b" dx="3">*</tspan></text><text x="580" y="604">Password<tspan fill="#b1380b" dx="3">*</tspan></text>
+</g>
+<rect x="312" y="614" width="252" height="36" rx="6" fill="#ffffff" stroke="#8a8d90"/>
+<rect x="580" y="614" width="252" height="36" rx="6" fill="#ffffff" stroke="#0066cc" stroke-width="2"/>
+<text x="324" y="637" font-family="'Red Hat Mono',monospace" font-size="11.5" fill="#151515">${vault::ecommerce/username}</text>
+<text x="592" y="637" font-family="'Red Hat Mono',monospace" font-size="14" fill="#151515">${</text>
+<line x1="611" y1="620" x2="611" y2="642" stroke="#0066cc"/>
+<text x="312" y="670" font-family="'Red Hat Text',Arial,sans-serif" font-size="11.5" fill="#4d4d4d">References are stored as text.</text>
+<text x="312" y="688" font-family="'Red Hat Text',Arial,sans-serif" font-size="11.5" fill="#4d4d4d">No secret value is sent to the platform.</text>
+<rect x="580" y="654" width="300" height="278" rx="8" fill="#ffffff" stroke="#d2d2d2" filter="url(#sh)"/>
+<text x="594" y="680" font-family="'Red Hat Text',Arial,sans-serif" font-size="12.5" font-weight="600" fill="#151515">Vault references</text>
+<text x="866" y="680" font-family="'Red Hat Text',Arial,sans-serif" font-size="10.5" fill="#8a8d90" text-anchor="end">typed ${</text>
+<rect x="580" y="692" width="300" height="28" fill="#e0f0ff"/>
+<text x="594" y="711" font-family="'Red Hat Text',Arial,sans-serif" font-size="12.5" font-weight="600" fill="#151515">ecommerce</text>
+<text x="594" y="739" font-family="'Red Hat Mono',monospace" font-size="13" fill="#151515">username</text>
+<rect x="580" y="748" width="300" height="28" fill="#e0f0ff"/>
+<text x="594" y="767" font-family="'Red Hat Mono',monospace" font-size="13" font-weight="500" fill="#151515">password</text>
+<path d="M850 763 l4 4 8-9" fill="none" stroke="#0066cc" stroke-width="1.8"/>
+<text x="594" y="805" font-family="'Red Hat Text',Arial,sans-serif" font-size="12.5" font-weight="600" fill="#151515">kafka</text>
+<text x="594" y="833" font-family="'Red Hat Mono',monospace" font-size="13" fill="#151515">username</text>
+<text x="594" y="861" font-family="'Red Hat Mono',monospace" font-size="13" fill="#151515">password</text>
+<line x1="580" y1="878" x2="880" y2="878" stroke="#d2d2d2"/>
+<text x="594" y="906" font-family="'Red Hat Text',Arial,sans-serif" font-size="12" fill="#4d4d4d">Select a key or finish typing the reference.</text>
+<rect x="872" y="204" width="512" height="224" rx="8" fill="#ffffff" stroke="#d2d2d2"/>
+<text x="892" y="234" font-family="'Red Hat Display',Arial,sans-serif" font-size="16" font-weight="500" fill="#151515">Prefix-triggered references</text>
+<g font-family="'Red Hat Text',Arial,sans-serif" font-size="12.5" fill="#4d4d4d">
+<text x="892" y="266">1. Keep typing for an ordinary literal value.</text>
+<text x="892" y="294">2. Type ${ to list registered vaults and keys.</text>
+<text x="892" y="322">3. Select a key, or type/paste the full expression.</text>
+<text x="892" y="350">References also work inside longer values.</text>
+<text x="892" y="386">The autocomplete list requires vault:read when IAM is on.</text>
+<text x="892" y="408">Saving the connection requires connection:write.</text>
+</g>
+<rect x="872" y="454" width="512" height="150" rx="8" fill="#ffffff" stroke="#d2d2d2"/>
+<text x="892" y="484" font-family="'Red Hat Display',Arial,sans-serif" font-size="16" font-weight="500" fill="#151515">What is saved</text>
+<text x="892" y="510" font-family="'Red Hat Text',Arial,sans-serif" font-size="12.5" fill="#4d4d4d">The connection stores references. Values remain in the secret store.</text>
+<rect x="892" y="530" width="472" height="54" rx="6" fill="#f2f2f2"/>
+<text x="906" y="552" font-family="'Red Hat Mono',monospace" font-size="11.5" fill="#151515">"username": "${vault::ecommerce/username}",</text>
+<text x="906" y="574" font-family="'Red Hat Mono',monospace" font-size="11.5" fill="#151515">"password": "${vault::ecommerce/password}"</text>
+<line x1="312" y1="944" x2="1384" y2="944" stroke="#d2d2d2"/>
+<rect x="312" y="962" width="92" height="36" rx="18" fill="#0066cc"/>
+<text x="358" y="985" font-family="'Red Hat Text',Arial,sans-serif" font-size="14" font-weight="500" fill="#ffffff" text-anchor="middle">Validate</text>
+<rect x="420" y="962" width="164" height="36" rx="18" fill="#0066cc"/>
+<text x="502" y="985" font-family="'Red Hat Text',Arial,sans-serif" font-size="14" font-weight="500" fill="#ffffff" text-anchor="middle">Create connection</text>
+<text x="612" y="985" font-family="'Red Hat Text',Arial,sans-serif" font-size="14" fill="#0066cc">Cancel</text>
+<text x="684" y="978" font-family="'Red Hat Text',Arial,sans-serif" font-size="12.5" fill="#4d4d4d">Validation uses the conductor's dedicated design-time identity.</text>
+<text x="684" y="995" font-family="'Red Hat Text',Arial,sans-serif" font-size="12.5" fill="#4d4d4d">Resolved values are neither returned nor persisted.</text>
+<text x="1392" y="1020" font-family="'Red Hat Text',Arial,sans-serif" font-size="11" fill="#8a8d90" text-anchor="end">Mockup for DDD-67, not final UI</text>
+</svg>

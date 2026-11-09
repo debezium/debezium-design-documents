@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 740" width="1440" height="740" role="img" aria-label="Stage UI mockup: Vault reference catalog with runtime and design-time paths">
+<title>Stage UI mockup: Vault reference catalog with runtime and design-time paths</title>
+<rect x="0" y="0" width="1440" height="740" fill="#f2f2f2"/>
+<text x="72" y="42" font-family="'Red Hat Display',Arial,sans-serif" font-size="25" font-weight="500" fill="#151515">debezium</text>
+<rect x="1236" y="14" width="42" height="36" rx="8" fill="#ffffff" stroke="#8a8d90"/><rect x="1286" y="14" width="64" height="36" rx="8" fill="#ffffff" stroke="#8a8d90"/>
+<circle cx="1398" cy="32" r="8" fill="none" stroke="#151515" stroke-width="1.4"/><text x="1398" y="36.5" font-family="'Red Hat Text',Arial,sans-serif" font-size="11" font-weight="600" fill="#151515" text-anchor="middle">?</text>
+<g font-family="'Red Hat Text',Arial,sans-serif" font-size="14.5" fill="#4d4d4d"><text x="60" y="101">Pipelines</text><text x="60" y="144">Sources</text><text x="60" y="187">Transforms</text><text x="60" y="230">Destinations</text><text x="60" y="273">Connections</text><text x="60" y="359">Alerts</text></g>
+<rect x="22" y="293" width="244" height="36" rx="6" fill="#ffffff"/><rect x="15" y="293" width="3" height="36" rx="1.5" fill="#0066cc"/>
+<text x="60" y="316" font-family="'Red Hat Text',Arial,sans-serif" font-size="14.5" font-weight="500" fill="#151515">Vaults</text>
+<rect x="280" y="66" width="1136" height="652" rx="16" fill="#ffffff"/>
+<text x="312" y="108" font-family="'Red Hat Display',Arial,sans-serif" font-size="26" font-weight="500" fill="#151515">Vaults</text>
+<text x="312" y="136" font-family="'Red Hat Text',Arial,sans-serif" font-size="13.5" fill="#4d4d4d">References to credentials kept in an external secret store. Values are never stored or displayed.</text>
+<text x="312" y="158" font-family="'Red Hat Text',Arial,sans-serif" font-size="12.5" fill="#4d4d4d">The conductor resolves values only for requested design-time validation and discovery.</text>
+<rect x="312" y="176" width="1072" height="58" rx="6" fill="#f3f0ff"/><rect x="312" y="176" width="3" height="58" rx="1.5" fill="#5e40be"/>
+<text x="334" y="199" font-family="'Red Hat Text',Arial,sans-serif" font-size="13" font-weight="600" fill="#151515">Secret store configured by the platform administrator</text>
+<text x="334" y="220" font-family="'Red Hat Mono',monospace" font-size="11.5" fill="#4d4d4d">http://openbao.openbao.svc.cluster.local:8200</text>
+<text x="800" y="220" font-family="'Red Hat Text',Arial,sans-serif" font-size="12" fill="#4d4d4d">Runtime role: pipeline</text><text x="1000" y="220" font-family="'Red Hat Text',Arial,sans-serif" font-size="12" fill="#4d4d4d">Token audience: openbao</text>
+<rect x="312" y="254" width="320" height="36" rx="6" fill="#ffffff" stroke="#8a8d90"/>
+<circle cx="329" cy="270" r="4.5" fill="none" stroke="#4d4d4d"/><line x1="332.5" y1="273.5" x2="337" y2="278" stroke="#4d4d4d"/>
+<text x="348" y="277" font-family="'Red Hat Text',Arial,sans-serif" font-size="14" fill="#8a8d90">Find by name</text>
+<rect x="648" y="254" width="104" height="36" rx="18" fill="#0066cc"/><text x="700" y="277" font-family="'Red Hat Text',Arial,sans-serif" font-size="14" font-weight="500" fill="#ffffff" text-anchor="middle">Add vault</text>
+<text x="1384" y="277" font-family="'Red Hat Text',Arial,sans-serif" font-size="12.5" fill="#4d4d4d" text-anchor="end">vault:read to view · vault:write to modify</text>
+<g font-family="'Red Hat Text',Arial,sans-serif" font-size="12.5" font-weight="600" fill="#151515"><text x="328" y="326">Name</text><text x="520" y="326">Runtime path</text><text x="792" y="326">Design-time path</text><text x="1090" y="326">Keys</text><text x="1270" y="326">Used in</text></g>
+<line x1="312" y1="340" x2="1384" y2="340" stroke="#a3a3a3"/>
+<text x="328" y="372" font-family="'Red Hat Text',Arial,sans-serif" font-size="14.5" font-weight="500" fill="#0066cc">ecommerce</text>
+<text x="328" y="392" font-family="'Red Hat Text',Arial,sans-serif" font-size="11.5" fill="#4d4d4d">PostgreSQL, dynamic runtime role</text>
+<text x="520" y="382" font-family="'Red Hat Mono',monospace" font-size="11.5" fill="#151515">db/ecommerce/creds/pipeline</text>
+<text x="792" y="382" font-family="'Red Hat Mono',monospace" font-size="10.5" fill="#151515">db/ecommerce/creds/conductor-metadata</text>
+<rect x="1090" y="364" width="76" height="24" rx="12" fill="#ffffff" stroke="#a3a3a3"/><text x="1098" y="380" font-family="'Red Hat Mono',monospace" font-size="10.5" fill="#151515">username</text>
+<rect x="1172" y="364" width="76" height="24" rx="12" fill="#ffffff" stroke="#a3a3a3"/><text x="1180" y="380" font-family="'Red Hat Mono',monospace" font-size="10.5" fill="#151515">password</text>
+<text x="1270" y="374" font-family="'Red Hat Text',Arial,sans-serif" font-size="13" fill="#151515">1 source</text><text x="1270" y="394" font-family="'Red Hat Text',Arial,sans-serif" font-size="11.5" fill="#0066cc">pgsql-src</text>
+<line x1="312" y1="424" x2="1384" y2="424" stroke="#d2d2d2"/>
+<text x="328" y="456" font-family="'Red Hat Text',Arial,sans-serif" font-size="14.5" font-weight="500" fill="#0066cc">kafka</text>
+<text x="328" y="476" font-family="'Red Hat Text',Arial,sans-serif" font-size="11.5" fill="#4d4d4d">Kafka SCRAM user, static</text>
+<text x="520" y="466" font-family="'Red Hat Mono',monospace" font-size="11.5" fill="#151515">secret/data/debezium/demo/kafka</text>
+<text x="792" y="466" font-family="'Red Hat Text',Arial,sans-serif" font-size="12" fill="#4d4d4d">Same path for validation</text>
+<rect x="1090" y="448" width="76" height="24" rx="12" fill="#ffffff" stroke="#a3a3a3"/><text x="1098" y="464" font-family="'Red Hat Mono',monospace" font-size="10.5" fill="#151515">username</text>
+<rect x="1172" y="448" width="76" height="24" rx="12" fill="#ffffff" stroke="#a3a3a3"/><text x="1180" y="464" font-family="'Red Hat Mono',monospace" font-size="10.5" fill="#151515">password</text>
+<text x="1270" y="458" font-family="'Red Hat Text',Arial,sans-serif" font-size="13" fill="#151515">1 destination</text><text x="1270" y="478" font-family="'Red Hat Text',Arial,sans-serif" font-size="11.5" fill="#0066cc">kafka-dest</text>
+<line x1="312" y1="508" x2="1384" y2="508" stroke="#d2d2d2"/>
+<text x="328" y="540" font-family="'Red Hat Text',Arial,sans-serif" font-size="14.5" font-weight="500" fill="#0066cc">http-sink</text>
+<text x="328" y="560" font-family="'Red Hat Text',Arial,sans-serif" font-size="11.5" fill="#4d4d4d">Bearer token for the HTTP sink</text>
+<text x="520" y="550" font-family="'Red Hat Mono',monospace" font-size="11.5" fill="#151515">secret/data/debezium/http-sink</text>
+<text x="792" y="550" font-family="'Red Hat Text',Arial,sans-serif" font-size="12" fill="#4d4d4d">Same path for validation</text>
+<rect x="1090" y="532" width="56" height="24" rx="12" fill="#ffffff" stroke="#a3a3a3"/><text x="1100" y="548" font-family="'Red Hat Mono',monospace" font-size="10.5" fill="#151515">token</text>
+<text x="1270" y="550" font-family="'Red Hat Text',Arial,sans-serif" font-size="12.5" fill="#4d4d4d">Not used yet</text>
+<line x1="312" y1="592" x2="1384" y2="592" stroke="#d2d2d2"/>
+<text x="312" y="626" font-family="'Red Hat Text',Arial,sans-serif" font-size="12.5" fill="#4d4d4d">Bound vaults cannot be deleted. Remove connection references and resource bindings first.</text>
+<text x="312" y="650" font-family="'Red Hat Text',Arial,sans-serif" font-size="12.5" fill="#4d4d4d">Deleting a catalog record never deletes values from the external secret store.</text>
+<text x="1392" y="704" font-family="'Red Hat Text',Arial,sans-serif" font-size="11" fill="#8a8d90" text-anchor="end">Mockup for DDD-67, not final UI</text>
+</svg>
