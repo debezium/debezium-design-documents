@@ -16,12 +16,11 @@
 ## About Me
 
 **Name:** Kartik Angiras  
-**Portfolio:** [kartikangiras.com](https://kartikangiras.com)  
 **GitHub:** [github.com/kartikangiras](https://github.com/kartikangiras)  
 **LinkedIn:** [linkedin.com/in/kartikangiras](https://linkedin.com/in/kartikangiras)  
 **Email:** [angiraskartik@gmail.com](mailto:angiraskartik@gmail.com)  
-**University:** BITS Pilani Aktu<br>
-**Program:** Computer Science  
+**University:** ABES Engineering College  
+**Program:** Computer Science & Engineering  
 **Expected Graduation Year:** 2028  
 **Timezone:** IST (UTC +5:30)  
 
