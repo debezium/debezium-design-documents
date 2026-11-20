@@ -11,6 +11,7 @@ When creating a new document, please add it to the list below.
 * [DDD-7](DDD-7.md): Asynchronous Debezium embedded engine
 * [DDD-8](DDD-8.md): Read-only incremental snapshots for other relational connectors
 * [DDD-9](DDD-9.md): Oracle unbuffered adapter
+* [DDD-11](DDD_11.md): Efficient Heap-based Transaction Buffer
 * [DDD-12](DDD-12.md): Quarkus Debezium Extension
 * [DDD-13](DDD-13.md): Debezium component descriptors
 * [DDD-16](DDD-16.md): Quarkus Debezium Cache/Search Invalidation
